@@ -8,13 +8,23 @@ http://arxiv.org/abs/1912.01412
 
 For more details read: generate_expressions.md
 """
+
+import re
+import time
+import errno
+import signal
+from functools import wraps, partial
+
+import sympy
+from sympy import simplify, Float, Integer, preorder_traversal
+from sympy.solvers import solvers
 import os
 from maths import Math
 import numpy as np
 from argparse import ArgumentParser
 from types import SimpleNamespace
 
-from torch.util.data import Dataset, Dataloader
+# from torch.utils.data import Dataset, Dataloader
 
 # ---- constants ---- #
 OPS = {
@@ -40,6 +50,39 @@ COEFF = [0, +10.]
 
 UNA_OPS = [k for k, v in OPS.items() if v[1] == 1]
 BIN_OPS = [k for k, v in OPS.items() if v[1] == 2]
+
+# ---- util ---- #
+def timeout(seconds=10, error_message=os.strerror(errno.ETIME)):
+
+    def decorator(func):
+
+        def _handle_timeout(repeat_id, signum, frame):
+            # logger.warning(f"Catched the signal ({repeat_id}) Setting signal handler {repeat_id + 1}")
+            signal.signal(signal.SIGALRM, partial(_handle_timeout, repeat_id + 1))
+            signal.alarm(seconds)
+            raise TimeoutError(error_message)
+
+        def wrapper(*args, **kwargs):
+            old_signal = signal.signal(signal.SIGALRM, partial(_handle_timeout, 0))
+            old_time_left = signal.alarm(seconds)
+            assert type(old_time_left) is int and old_time_left >= 0
+            if 0 < old_time_left < seconds:  # do not exceed previous timer
+                signal.alarm(old_time_left)
+            start_time = time.time()
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                if old_time_left == 0:
+                    signal.alarm(0)
+                else:
+                    sub = time.time() - start_time
+                    signal.signal(signal.SIGALRM, old_signal)
+                    signal.alarm(max(0, math.ceil(old_time_left - sub)))
+            return result
+
+        return wraps(func)(wrapper)
+
+    return decorator
 
 # ---- functions ---- #
 def get_ubi_dist(N = 3, p1 = 1, p2 = 1, l = 1):
@@ -249,98 +292,147 @@ def prefix_to_infix(expr):
         raise ValueError(f"Incorrect prefix expression \"{expr}\". \"{r}\" was not parsed.")
     return f'({p})'
 
+def count_nested_exp(s):
+    stack = []
+    count = 0
+    max_count = 0
+    for v in re.findall('[+-/*//()]|[a-zA-Z0-9]+', s):
+        if v == '(':
+            stack.append(v)
+        elif v == ')':
+            while True:
+                x = stack.pop()
+                if x in ["exp"]:
+                    count -= 1
+                if x == '(':
+                    break
+        else:
+            stack.append(v)
+            if v in ["exp"]:
+                count += 1
+                max_count = max(max_count, count)
+    assert len(stack) == 0
+    return max_count
 
-def is_valid(expr):
+
+def is_valid_and_simplify(expr, max_nested_exp = 1):
+    # first we check whether there is any variable in the data
+    estr = prefix_to_infix(expr)
+    
+    # next we check if the expression generated has >max_nested_exp exps
+    if count_nested_exp(estr) > max_nested_exp:
+        return False
+    
+    # next we can check if we see whether any equation can be simplified
+    # eg. (((x)+(x))/(4)) = ((x)/(2)) using sympy and then convert the
+    # simplified format to brackets to feed to the model
+    simp = simplify(estr)
+    if type(simp) in [sympy.nan] or isinstance(simp, Float) or isinstance(simp, Integer):
+        # sometimes the eqaution can be invalid like x/0
+        return False
+    
+    simp_str = str(simp)
+    if not (
+        re.findall(r"\(x\)", simp_str) +
+        re.findall(r"\(y\)", simp_str) +
+        re.findall(r"\(z\)", simp_str) +
+        re.findall(r"\(t\)", simp_str)
+    ):
+        return False
+    
+    s2 = simp
+    for a in preorder_traversal(simp):
+        if isinstance(a, Float):
+            s2 = s2.subs(a, round(a, 3))
+    
+    print("-->", estr)
+    return s2
+
+
+def prepare_string():
     pass
 
 
-def generate_obs(expr, pt = True):
 
-    if pt:
-        # return tensors
-        pass
-    pass
+@timeout(10)
+def create_one_example(num_samples, dubi):
+    expr = generate_random_expression(dubi, N=4)
+    simp_expr = is_valid_and_simplify(expr)
+    obs = None
+    if simp_expr:
+#         print("$$$", simp_expr)
+        estr = prefix_to_infix(expr)
+        variables = list(set(
+            re.findall(r"\(x\)", estr) +
+            re.findall(r"\(y\)", estr) +
+            re.findall(r"\(z\)", estr) +
+            re.findall(r"\(t\)", estr)
+        ))
+        variables = sorted([x[1] for x in variables])
+#         print(variables)
+        obs = []
+        while len(obs) < num_samples:
+            subs = {x: round(np.random.uniform(low = -1., high = +1.), 3) for x in variables}
+            out = simp_expr.evalf(subs = subs, n = 3)
+            if "I" in str(out):
+                continue
+#             print(list(subs.values()), "-->", out)
+            obs.append((subs, out))
+    return obs, str(simp_expr)
 
 
+# class o2fDataset(Dataset):
+#     def __init__(self, args):
+#         # sanity check
+#         assert getattr(args, "Nmin")
+#         assert getattr(args, "Nmax")
+#         assert getattr(args, "p1min")
+#         assert getattr(args, "p1max")
+#         assert getattr(args, "p2min")
+#         assert getattr(args, "p2max")
+#         assert getattr(args, "lmin")
+#         assert getattr(args, "lmax")
+#         assert getattr(args, "sample_seq")
+#         assert getattr(args, "dataset_size")
 
+#         self.args = args
 
-class o2fDataset(Dataset):
-    def __init__(self, args):
-        # sanity check
-        assert getattr(args, "Nmin")
-        assert getattr(args, "Nmax")
-        assert getattr(args, "p1min")
-        assert getattr(args, "p1max")
-        assert getattr(args, "p2min")
-        assert getattr(args, "p2max")
-        assert getattr(args, "lmin")
-        assert getattr(args, "lmax")
-        assert getattr(args, "sample_seq")
-        assert getattr(args, "dataset_size")
+#         # list of all the possible permutations of unary-binary distributions so
+#         # we do not need to compute this thing again and again
+#         self.dubis = {}
+#         for N in range(args.Nmin, args.Nmax + 1, 1):
+#             for p1 in range(args.p1min, args.p1max + 1, 1):
+#                 for p2 in range(args.p2min, args.p2max + 1, 1):
+#                     for l in range(args.lmin, args.lmax + 1, 1):
+#                         self.dubis[(N, p1, p2, l)] = get_ubi_dist(N, p1, p2, l)
 
-        self.args = args
+#     def _get_N(self):
+#         return np.random.radnint(low=self.args.Nmin, high=self.args.Nmax)
 
-        # list of all the possible permutations of unary-binary distributions so
-        # we do not need to compute this thing again and again
-        self.dubis = {}
-        for N in range(args.Nmin, args.Nmax + 1, 1):
-            for p1 in range(args.p1min, args.p1max + 1, 1):
-                for p2 in range(args.p2min, args.p2max + 1, 1):
-                    for l in range(args.lmin, args.lmax + 1, 1):
-                        self.dubis[(N, p1, p2, l)] = get_ubi_dist(N, p1, p2, l)
+#     def _get_p1(self):
+#         return np.random.randint(low=self.args.p1min, high=self.args.p1max)
 
-    def _get_N(self):
-        return np.random.radnint(low=self.args.Nmin, high=self.args.Nmax)
+#     def _get_p2(self):
+#         return np.random.randint(low=self.args.p2min, high=self.args.p2max)
 
-    def _get_p1(self):
-        return np.random.randint(low=self.args.p1min, high=self.args.p1max)
+#     def _get_l(self):
+#         return np.random.randint(low=self.args.lmin, high=self.args.lmax)
 
-    def _get_p2(self):
-        return np.random.randint(low=self.args.p2min, high=self.args.p2max)
+#     def __len__(self):
+#         return self.dataset_size
 
-    def _get_l(self):
-        return np.random.randint(low=self.args.lmin, high=self.args.lmax)
-
-    def __len__(self):
-        return self.dataset_size
-
-    def __getitem__(self, *args):
-        N, p1, p2, l = self._get_N(), self._get_p1(), self._get_p2(), self._get_l()
-        infix = generate_random_expression(N, l, p1, p2)
-        while not is_valid(infix):
-            infix = generate_random_expression(N, l, p1, p2)
+#     def __getitem__(self, *args):
+#         N, p1, p2, l = self._get_N(), self._get_p1(), self._get_p2(), self._get_l()
+#         infix = generate_random_expression(N, l, p1, p2)
+#         while not is_valid(infix):
+#             infix = generate_random_expression(N, l, p1, p2)
         
-        o = [generate_obs(infix, pt = True) for _ in range(args.sample_seq)]
+#         o = [generate_obs(infix, pt = True) for _ in range(args.sample_seq)]
 
-        return o
+#         return o
 
         
-
-
-
-
-
-# # ---- script ---- #
-# if __name__ == "__main__":
-#     args = ArgumentParser("script to prepare data for o2f")
-#     args.add_argument("--samples", default = int(1e6), type = int, help = "number of samples to prepare")
-#     args.add_argument("--folder", type = str, default = "o2f_data", help = "folder to dump")
-
-#     # generations arguments
-#     args.add_argument("--Nmin", type = int, default = 1, choices = [i for i in range(9)], help = "what are the minimum number of operators to include in the expression generation engine")
-#     args.add_argument("--Nmax", type = int, defualt = 4, choices = [i for i in range(1, 10)], help = "what are the maximum number of operators to include in the expression generation engine")
-
-#     args.add_argument("--p1min", type = int, default = 1, choices = [i for i in range(9)], help = "what are the minimum number of unary operators to include in the expression generation engine")
-#     args.add_argument("--p1max", type = int, defualt = 4, choices = [i for i in range(1, 10)], help = "what are the maximum number of unary operators to include in the expression generation engine")
-
-#     args.add_argument("--p2min", type = int, default = 1, choices = [i for i in range(9)], help = "what are the minimum number of binary operators to include in the expression generation engine")
-#     args.add_argument("--p2max", type = int, defualt = 4, choices = [i for i in range(1, 10)], help = "what are the maximum number of binary operators to include in the expression generation engine")
-
-#     args.add_argument("--lmin", type=int, default=1, choices=[i for i in range(9)], help="what are the minimum number of leaves to include in the expression generation engine")
-#     args.add_argument("--lmax", type=int, defualt=4, choices=[i for i in range(1, 10)], help="what are the maximum number of leaves to include in the expression generation engine")
-
-#     args = args.parse_args()
-
-#     os.makedirs(args.folder, exist_ok=True)
-
-#     # make the possible combinations
+if __name__ == "__main__":
+    dubi = get_ubi_dist()
+    for _ in range(30):
+        print(create_one_example(num_samples=30, dubi=dubi))
