@@ -9,23 +9,30 @@ http://arxiv.org/abs/1912.01412
 For more details read: generate_expressions.md
 """
 
+from copy import Error
 import re
 import time
 import errno
+import logging
+import random
 import signal
 from functools import wraps, partial
+from numpy.core.defchararray import encode
 
 import sympy
 from sympy import simplify, Float, Integer, preorder_traversal
-from sympy.solvers import solvers
 import os
 from maths import Math
 import numpy as np
-from argparse import ArgumentParser
 from types import SimpleNamespace
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+
+from utils import show_notification
+
+logger = logging.getLogger('prepare_data')
+logger.setLevel(logging.INFO)
 
 # ---- constants ---- #
 OPS = {
@@ -61,7 +68,7 @@ VOCAB_TOKENS += [f"{i}" for i in range(10)] # numbers
 VOCAB_TOKENS += VARIABLES # variables
 VOCAB_TOKENS += ["_pi_", "_e_"] # special numbers
 VOCAB_TOKENS += ["(", "+", "-", "*", "/", ")", ".", "_**_"] # other math ops
-VOCAB_TOKENS += [START_TOKEN + PAD_TOKEN + END_TOKEN]  # language modelling
+VOCAB_TOKENS += [START_TOKEN, PAD_TOKEN, END_TOKEN]  # language modelling
 VOCAB_TOKENS += ["o"] # ??
 VOCAB = {t: i for i, t in enumerate(VOCAB_TOKENS)}
 
@@ -91,13 +98,19 @@ def timeout(seconds=10, error_message=os.strerror(errno.ETIME)):
                 else:
                     sub = time.time() - start_time
                     signal.signal(signal.SIGALRM, old_signal)
-                    signal.alarm(max(0, math.ceil(old_time_left - sub)))
+                    signal.alarm(max(0, Math.ceil(old_time_left - sub)))
             return result
 
         return wraps(func)(wrapper)
 
     return decorator
 
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 # ---- functions ---- #
 
 
@@ -338,6 +351,9 @@ def count_nested_exp(estr):
 
 
 def is_valid_and_simplify(expr, max_nested_exp=1):
+    if len(expr) == 1:
+        return False
+
     # first we check whether there is any variable in the data
     estr = prefix_to_infix(expr)
 
@@ -400,7 +416,7 @@ def prepare_expr_string(estr):
     return seq
 
 
-@timeout(10)
+@timeout(6)
 def create_one_example(
         num_samples,
         dubi, N=3, l=1, p1=1, p2=1,
@@ -435,13 +451,47 @@ def create_one_example(
                 for x in variables
             }
             out = simp_expr.evalf(subs=subs, n=ROUND)
+            subs.update({"o": out})
             if "I" in str(out) or str(out) in ["nan"]:  # imaginary numbers like log of a negative number
                 continue
-            obs.append((subs, out))
-    return obs, prepare_expr_string(str(simp_expr))
+            obs.append(subs)
+        return obs, prepare_expr_string(str(simp_expr))
+    return None, False
 
 
-class o2fDataset(Dataset):
+def create_one_example_wrapper(maxlen, **kwargs):
+    try:
+        obs, elist = create_one_example(**kwargs)
+        if elist == False:
+            raise Error
+        
+        # convert to pre-tensor ready data
+        elist_tokens = (
+            [VOCAB[START_TOKEN], ] + [VOCAB[x] for x in elist] +
+            [VOCAB[END_TOKEN], ]
+        )[:maxlen + 1]
+        elist_tokens += [VOCAB[PAD_TOKEN],]*(maxlen + 1 - len(elist_tokens))
+        print(":::::::", elist, len(elist_tokens))
+        attention_mask = [1 for t in elist_tokens if t != VOCAB[PAD_TOKEN]]
+        attention_mask += [0,] * (len(elist_tokens) - len(attention_mask))
+        decoder_input = {
+            "input_ids": np.asarray(elist_tokens),
+            "attention_mask": np.asarray(attention_mask)
+        }
+
+        encoder_input = {v: [] for v in VARIABLES + ["o"]}
+        for _obs in obs:
+            for v in VARIABLES + ["o"]:
+                encoder_input[v].append(_obs.pop(v, 0.))
+        for k,v in encoder_input.items():
+            encoder_input[k] = np.round(np.asarray(v).astype(float), ROUND)
+        return decoder_input, encoder_input
+    except Exception as e:
+        logging.info(f"Exception: {e}", exc_info = True)
+        return create_one_example_wrapper(maxlen, **kwargs)
+
+
+class O2fDataset(Dataset):
     def __init__(self, args):
         # sanity check
         assert getattr(args, "Nmin")
@@ -452,109 +502,117 @@ class o2fDataset(Dataset):
         assert getattr(args, "p2max")
         assert getattr(args, "lmin")
         assert getattr(args, "lmax")
-        assert getattr(args, "sample_seq")
+        assert getattr(args, "num_samples")
         assert getattr(args, "maxlen")
         assert getattr(args, "dataset_size")
 
         self.args = args
+        self.dataset_size = args.dataset_size
 
         # list of all the possible permutations of unary-binary distributions so
-        # we do not need to compute this thing again and again
+        # we do not need to compute this thing again and again, but it's fine
+        # it takes <1s to do
         self.dubis = {}
-        start_time = time.time()
         for N in range(args.Nmin, args.Nmax + 1, 1):
             for p1 in range(args.p1min, args.p1max + 1, 1):
                 for p2 in range(args.p2min, args.p2max + 1, 1):
                     for l in range(args.lmin, args.lmax + 1, 1):
                         self.dubis[(N, p1, p2, l)] = get_ubi_dist(N, p1, p2, l)
-        print("Loading distributions took:", start_time - time.time(), "s")
 
-    def _get_N(self):
-        return np.random.radnint(low=self.args.Nmin, high=self.args.Nmax)
+        # quick hacks to force non-singleton expressions, otherwise we have to manu duplicacy
+        self.pn = abs(np.random.normal(size = (args.Nmax + 1 - args.Nmin)))
+        self.pn[0] = 0.1
+        self.pn = self.pn / self.pn.sum()
+        self.pp1 = abs(np.random.normal(size = (args.p1max + 1 - args.p1min)))
+        self.pp1 = self.pp1 / self.pp1.sum()
+        self.pp2 = abs(np.random.normal(size = (args.p2max + 1 - args.p2min)))
+        self.pp2 = self.pp2 / self.pp2.sum()
+        self.pl = abs(np.random.normal(size=(args.lmax + 1 - args.lmin)))
+        self.pl = self.pl / self.pl.sum()
 
-    def _get_p1(self):
-        return np.random.randint(low=self.args.p1min, high=self.args.p1max)
+    @staticmethod
+    def _get_N(l, h, p = None):
+        return np.random.choice([i for i in range(l, h + 1, 1)], p=p)
 
-    def _get_p2(self):
-        return np.random.randint(low=self.args.p2min, high=self.args.p2max)
+    @staticmethod
+    def _get_p1(l, h, p = None):
+        return np.random.choice([i for i in range(l, h + 1, 1)], p=p)
 
-    def _get_l(self):
-        return np.random.randint(low=self.args.lmin, high=self.args.lmax)
+    @staticmethod
+    def _get_p2(l, h, p = None):
+        return np.random.choice([i for i in range(l, h + 1, 1)], p=p)
+
+    @staticmethod
+    def _get_l(l, h, p=None):
+        return np.random.choice([i for i in range(l, h + 1, 1)], p=p)
 
     def __len__(self):
         return self.dataset_size
 
     def __getitem__(self, *args):
-        N, p1, p2, l = self._get_N(), self._get_p1(), self._get_p2(), self._get_l()
-        obs, elist = create_one_example(
-            num_samples=args.num_samples, dubi=self.dubis[(N, p1, p2, l)],
-            N=N, l=l, p1=p1, p2=p2
+        N = self._get_N(self.args.Nmin, self.args.Nmax, self.pn)
+        p1 = self._get_p1(self.args.p1min, self.args.p1max, self.pp1)
+        p2 = self._get_p2(self.args.p2min, self.args.p2max, self.pp2)
+        l = self._get_l(self.args.lmin, self.args.lmax, self.pl)
+        decoder_input, encoder_input = create_one_example_wrapper(
+            num_samples=self.args.num_samples,
+            dubi=self.dubis[(N, p1, p2, l)],
+            N=N, l=l, p1=p1, p2=p2,
+            maxlen = self.args.maxlen
         )
-        while obs is None:
-            obs, elist = create_one_example(
-                num_samples=args.num_samples, dubi=self.dubis[(N, p1, p2, l)],
-                N=N, l=l, p1=p1, p2=p2
-            )
 
-        # convert to tokens for decoder
-        elist_tokens = (
-            (VOCAB[START_TOKEN],) + (VOCAB[x] for x in elist) +
-            (VOCAB[END_TOKEN],)
-        )[:self.args.maxlen + 1]
-        elist_tokens += tuple([VOCAB[PAD_TOKEN],]*(self.args.maxlen - len(elist_tokens)))
-        attention_mask = [1 for t in elist_tokens if t != VOCAB[PAD_TOKEN]]
-        attention_mask += [0,] * (len(elist_tokens) - len(attention_mask))
-        decoder_input = {
-            "tokens": torch.from_numpy(np.asarray(elist_tokens)).long(),
-            "attention_mask": torch.from_numpy(np.asarray(attention_mask)).long()
-        }
-
-        # convert observation to input for model
-        encoder_input = {
-            "x": [], # var-x
-            "y": [], # var-y
-            "z": [], # var-z
-            "t": [], # var-t
-            "o": [] # output
-        }
-        
-
-        # for _ in range(10):
-        #     try:
-        #         obs, estr = create_one_example(num_samples=30, dubi=dubi)
-        #         if obs is not None:
-        #             # for x in obs:
-        #             #     print(list(x[0].values()), "==>", x[1])
-        #             # print("EXPR:", estr, [VOCAB[x] for x in estr])
-        #     except Exception as e:
-        #         pass
-
-        # infix = generate_random_expression(N, l, p1, p2)
-        # while not is_valid(infix):
-        #     infix = generate_random_expression(N, l, p1, p2)
-        # o = [generate_obs(infix, pt=True) for _ in range(args.sample_seq)]
-
-        return o
+        # convert to tensors
+        for k, v in decoder_input.items():
+            decoder_input[k] = torch.from_numpy(v).long()
+        for k,v in encoder_input.items():
+            encoder_input[k] = torch.from_numpy(v)
+        return encoder_input, decoder_input
 
 
 # if __name__ == "__main__":
 #     print(VOCAB)
+#     args = SimpleNamespace(
+#         Nmin=1,
+#         Nmax=5,
+#         p1min=1,
+#         p1max=3,
+#         p2min=1,
+#         p2max=3,
+#         lmin=1,
+#         lmax=3,
+#         num_samples=40,
+#         dataset_size=50000,
+#         maxlen=20
+#     )
 
-#     dubi = get_ubi_dist()
+#     dubis = {}
+#     for N in range(args.Nmin, args.Nmax + 1, 1):
+#         for p1 in range(args.p1min, args.p1max + 1, 1):
+#             for p2 in range(args.p2min, args.p2max + 1, 1):
+#                 for l in range(args.lmin, args.lmax + 1, 1):
+#                     dubis[(N, p1, p2, l)] = get_ubi_dist(N, p1, p2, l)
+
 #     # for _ in trange(100, ncols = 100):
-#     for _ in range(100):
-#         try:
-#             obs, estr = create_one_example(num_samples=30, dubi=dubi)
-#             if obs is not None:
-#                 # for x in obs:
-#                 #     print(list(x[0].values()), "==>", x[1])
-#                 print("EXPR:", estr, [VOCAB[x] for x in estr])
-#         except Exception as e:
-#             print("---->", e)
-#         print()
+#     for _ in range(20):
+#         N = O2fDataset._get_N(args.Nmin, args.Nmax)
+#         p1 = O2fDataset._get_p1(args.p1min, args.p1max)
+#         p2 = O2fDataset._get_p2(args.p2min, args.p2max)
+#         l = O2fDataset._get_l(args.lmin, args.lmax)
+#         decoder_input, encoder_input = create_one_example_wrapper(
+#             num_samples=args.num_samples,
+#             dubi=dubis[(N, p1, p2, l)],
+#             N=N, l=l, p1=p1, p2=p2,
+#             maxlen=args.maxlen
+#         )
+#         print("---> enc:", {k: v.size() for k, v in _enc.items()})
+#         print("---> dec:", {k: v.size() for k, v in _dec.items()})
 
 
 if __name__ == "__main__":
+    import json
+    from uuid import uuid4
+    os.makedirs("data", exist_ok=True)
+
     data_config = SimpleNamespace(
         Nmin=1,
         Nmax=5,
@@ -564,8 +622,41 @@ if __name__ == "__main__":
         p2max=3,
         lmin=1,
         lmax=3,
-        sample_seq=40,
-        dataset_size=1000,
+        num_samples=40,
+        dataset_size=10000,
         maxlen=20
     )
-    dl = DataLoader(**data_config)
+    ds = O2fDataset(data_config)
+    # set_seed(12234)
+    encoder = {v: [] for v in VARIABLES + ["o"]}
+    decoder = {"input_ids": [], "attention_mask": []}
+    start_time = time.time()
+    unk_name = str(uuid4())
+    print("This run", unk_name)
+    for i, (_enc, _dec) in enumerate(DataLoader(ds, batch_size = 1000, shuffle = True)):
+        # print(f"---> setting seed: {i}")
+        # set_seed(i)
+        # print("---> enc:", {k: v.size() for k, v in _enc.items()})
+        # print("---> dec:", {k: v.size() for k, v in _dec.items()})
+
+        # print("--- converting to lists ---")
+        enc = {k: v.tolist() for k, v in _enc.items()}
+        dec = {k: v.tolist() for k, v in _dec.items()}
+
+        for v in VARIABLES + ["o"]:
+            encoder[v].extend(enc[v])
+        for k in decoder.keys():
+            decoder[k].extend(dec[k])
+        
+        with open(f"data/{unk_name}_sample_{i}.json", "w") as f:
+            f.write(json.dumps({
+                "encoder": encoder,
+                "decoder": decoder
+            }))
+            show_notification("o2f Data", f"File saving completed at: data/{unk_name}_sample_{i}.json")
+            encoder = {v: [] for v in VARIABLES + ["o"]}
+            decoder = {"input_ids": [], "attention_mask": []}
+
+    show_notification("o2f Data", f"Script {unk_name} compelte in {time.time() - start_time :.3}s")
+
+

@@ -2,3 +2,4 @@ __pycache__/
 *.ipynb
 .ipynb_*/
 .DS_Store
+data/
