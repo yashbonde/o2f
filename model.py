@@ -124,7 +124,6 @@ class TransformerEncoderDecoderModel(nn.Module):
 
         # encoder embedding
         embd_shape = x.size()[:2]
-        print(x.size(), embd_shape)
         x = self.linx(x) + self.embd(torch.ones(embd_shape).long() * 0) # [B, N, n_embd]
         y = self.liny(y) + self.embd(torch.ones(embd_shape).long() * 1) # [B, N, n_embd]
         z = self.linz(z) + self.embd(torch.ones(embd_shape).long() * 2) # [B, N, n_embd]
@@ -185,19 +184,17 @@ class Trainer:
         print(f"Saving Model at {self.config.ckpt_path}")
         torch.save(raw_model.state_dict(), self.config.ckpt_path)
 
-    def train(self):
+    def train(self, verbose = False):
         model, config = self.model, self.config
-        raw_model = model.module if hasattr(self.model, "module") else model
-        # optimizer = raw_model.configure_optimizers(config)
         optimizer = self.optimizer
-        global_step = 1
+        gs = 0
         lr = config.learning_rate
 
-        tbtrue = True if hasattr(config, "tb_dir") else False
+        tbtrue = True if hasattr(config, "tb_path") else False
         if tbtrue:
-            tb = SummaryWriter(logdir = config.tb_dir, flush_secs = 20)
+            tb = SummaryWriter(log_dir=config.tb_path, flush_secs=20)
 
-        def run_epoch(split):
+        def run_epoch(split, gs = None, lr = None):
             is_train = split == "train"
             model.train(is_train)
             data = self.train_dataset if is_train else self.test_dataset
@@ -210,25 +207,29 @@ class Trainer:
             )
 
             losses = []
-            pbar = tqdm(enumerate(dl), total = len(dl) if is_train else enumerate(dl))
+            pbar = tqdm(enumerate(dl))
             for it, (enc, dec) in pbar:
-                print("---> enc:", {k: (v.size(), v.dtype) for k, v in enc.items()})
-                print("---> dec:", {k: (v.size(), v.dtype) for k, v in dec.items()})
-
+                _l = -1 if not losses else losses[-1]
+                _lr = -1 if lr is None else lr
+                
+                if is_train:
+                    pbar.set_description(f"[TRAIN] GS: {gs}, LR: {round(_lr, 5)}, Loss: {round(_l, 5)}")
+                else:
+                    pbar.set_description(f"[VAL]")
                 with torch.set_grad_enabled(is_train):
                     logits, loss = model(
                         **enc,
                         **{k: v[:, :-1] for k, v in dec.items()},
                         targets=dec["input_ids"][:, 1:],
-                        verbose=True
+                        verbose=verbose
                     )
                     losses.append(loss.item())
 
                 if is_train:
                     if tbtrue:
                         # add things to tb
-                        tb.add_scalar("loss", loss.item(), global_step=global_step, walltime=time.time())
-                        tb.add_scalar("lr", lr, global_step=global_step, walltime=time.time())
+                        tb.add_scalar("loss", loss.item(), global_step=gs, walltime=time.time())
+                        tb.add_scalar("lr", lr, global_step=gs, walltime=time.time())
 
                     # back prob and update the gradient
                     for p in model.parameters(): # better than model.zero_grad()
@@ -236,9 +237,10 @@ class Trainer:
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_norm_clip)
                     optimizer.step()
+                    gs += 1
 
                     # use the noam scheme from original transformers papers
-                    lr = min(global_step**(-0.5), global_step/(config.warmup_steps ** 1.5)) * (model.n_embd ** -0.5) * 0.1
+                    lr = min(gs**(-0.5), gs/(config.warmup_steps ** 1.5)) * (model.n_embd ** -0.5) * 0.1
                     for param_group in optimizer.param_groups:
                         param_group["lr"] = lr
             
@@ -246,10 +248,12 @@ class Trainer:
                 test_loss = float(np.mean(losses))
                 return test_loss
 
+            return gs, lr
+
         # now write wrapper for each epoch
         best_loss = float("inf")
         for epoch in range(config.max_epochs):
-            run_epoch("train")
+            gs, lr = run_epoch("train", gs, lr)
             if self.test_dataset is not None:
                 test_loss = run_epoch("test")
             
@@ -258,6 +262,10 @@ class Trainer:
             if self.config.ckpt_path is not None and good_model:
                 best_loss = test_loss
                 self.save_checkpoint()
+        
+        # close if used
+        if tbtrue:
+            tb.close()
 
 
 # ---- configs ---- #
@@ -277,8 +285,9 @@ class Config:
             self.attrs.append(k)
 
     def __repr__(self):
-        return "----- CONFIGURATION -----\n" + \
-            "\n".join([f"{k}\t{getattr(self, k)}" for k in self.attrs + self.pre_attr])
+        return "----- MODEL CONFIGURATION -----\n" + \
+            "\n".join([f"{k}\t{getattr(self, k)}" for k in self.attrs + self.pre_attr]) +\
+            "\n"
 
 
 class TrainerConfig:
@@ -303,99 +312,96 @@ class TrainerConfig:
 
     def __repr__(self):
         return "---- TRAINER CONFIGURATION ----\n" + \
-            "\n".join([f"{k}\t{getattr(self, k)}" for k in [
+            "\n".join([f"{k}\t{getattr(self, k)}" for k in list(set([
                 "max_epochs",
                 "batch_size",
                 "learning_rate",
                 "betas",
                 "grad_norm_clip",
                 "weight_decay",
-                "lr_decay",
-                "warmup_tokens",
-                "final_tokens",
                 "ckpt_path",
+                "warmup_steps",
                 "num_workers",
-            ] + self.attrs
-        ])
+            ] + self.attrs))
+        ]) + "\n"
 
 
+# if __name__ == "__main__":
+#     config = Config(batch_size = 4, num_samples = 14)
+#     print(config)
 
-if __name__ == "__main__":
-    config = Config(batch_size = 4, num_samples = 14)
-    print(config)
+#     print("---- MODEL ----")
+#     model = TransformerEncoderDecoderModel(config)
+#     # print(model)
 
-    print("---- MODEL ----")
-    model = TransformerEncoderDecoderModel(config)
-    # print(model)
+#     def get_dummy_encoder_input():
+#         return {
+#             "x": torch.randn(config.batch_size, config.num_samples, 1),
+#             "y": torch.randn(config.batch_size, config.num_samples, 1),
+#             "z": torch.randn(config.batch_size, config.num_samples, 1),
+#             "t": torch.randn(config.batch_size, config.num_samples, 1),
+#             "o": torch.randn(config.batch_size, config.num_samples, 1),
+#             "mask_x": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+#             "mask_y": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+#             "mask_z": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+#             "mask_t": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+#         }
 
-    def get_dummy_encoder_input():
-        return {
-            "x": torch.randn(config.batch_size, config.num_samples, 1),
-            "y": torch.randn(config.batch_size, config.num_samples, 1),
-            "z": torch.randn(config.batch_size, config.num_samples, 1),
-            "t": torch.randn(config.batch_size, config.num_samples, 1),
-            "o": torch.randn(config.batch_size, config.num_samples, 1),
-            "mask_x": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-            "mask_y": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-            "mask_z": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-            "mask_t": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-        }
-
-    def get_dummy_decoder_input():
-        attention_mask = []
-        for _ in range(config.batch_size):
-            attn = [1, ]*(config.maxlen - 4)
-            attn += [0, ]*(config.maxlen + 1 - len(attn))
-            attention_mask.append(attn)
-        return {
-            "input_ids": torch.from_numpy(
-                np.random.randint(config.vocab_size, size=(config.batch_size, config.maxlen + 1))
-            ),
-            "attention_mask": torch.from_numpy(np.asarray(attention_mask).astype(np.float32))
-        }
+#     def get_dummy_decoder_input():
+#         attention_mask = []
+#         for _ in range(config.batch_size):
+#             attn = [1, ]*(config.maxlen - 4)
+#             attn += [0, ]*(config.maxlen + 1 - len(attn))
+#             attention_mask.append(attn)
+#         return {
+#             "input_ids": torch.from_numpy(
+#                 np.random.randint(config.vocab_size, size=(config.batch_size, config.maxlen + 1))
+#             ),
+#             "attention_mask": torch.from_numpy(np.asarray(attention_mask).astype(np.float32))
+#         }
     
-    print("---- Encoder ----")
-    encoder_inputs = get_dummy_encoder_input()
-    for k, v in encoder_inputs.items():
-        print(f"{k} --> {(v.shape, v.dtype)}")
+#     print("---- Encoder ----")
+#     encoder_inputs = get_dummy_encoder_input()
+#     for k, v in encoder_inputs.items():
+#         print(f"{k} --> {(v.shape, v.dtype)}")
 
     
-    print("---- DECODER ----")
-    decoder_inputs = get_dummy_decoder_input()
-    for k, v in decoder_inputs.items():
-        print(f"{k} --> {v.shape}")
+#     print("---- DECODER ----")
+#     decoder_inputs = get_dummy_decoder_input()
+#     for k, v in decoder_inputs.items():
+#         print(f"{k} --> {v.shape}")
 
-    # now we feed shit to the model --> w/o loss
-    logits, loss = model(
-        **encoder_inputs,
-        **{k:v[:,:-1] for k,v in decoder_inputs.items()},
-        targets = decoder_inputs["input_ids"][:, 1:],
-        verbose = True
-    )
+#     # now we feed shit to the model --> w/o loss
+#     logits, loss = model(
+#         **encoder_inputs,
+#         **{k:v[:,:-1] for k,v in decoder_inputs.items()},
+#         targets = decoder_inputs["input_ids"][:, 1:],
+#         verbose = True
+#     )
 
-    print("Predictions:", torch.argmax(logits,dim  = -1), f"Loss: {loss}")
+#     print("Predictions:", torch.argmax(logits,dim  = -1), f"Loss: {loss}")
 
-    # okay cool, if this works till now then we can start training this shit
-    from types import SimpleNamespace
-    from prepare_data import O2fDataset
+#     # okay cool, if this works till now then we can start training this shit
+#     from types import SimpleNamespace
+#     from prepare_data import O2fDataset
 
-    data_config = SimpleNamespace(
-        Nmin=1,
-        Nmax=4,
-        p1min=1,
-        p1max=3,
-        p2min=1,
-        p2max=3,
-        lmin=1,
-        lmax=3,
-        num_samples=40,
-        dataset_size=10,
-        maxlen=20
-    )
-    train_conf = TrainerConfig(max_epochs=1)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=train_conf.learning_rate, betas=train_conf.betas)
+#     data_config = SimpleNamespace(
+#         Nmin=1,
+#         Nmax=4,
+#         p1min=1,
+#         p1max=3,
+#         p2min=1,
+#         p2max=3,
+#         lmin=1,
+#         lmax=3,
+#         num_samples=40,
+#         dataset_size=10,
+#         maxlen=20
+#     )
+#     train_conf = TrainerConfig(max_epochs=1)
+#     optimizer = torch.optim.AdamW(model.parameters(), lr=train_conf.learning_rate, betas=train_conf.betas)
 
-    ds = O2fDataset(data_config)
-    DataLoader(ds, batch_size=train_conf.batch_size, shuffle=True)
-    trainer = Trainer(model, optimizer, ds, None, train_conf)
-    trainer.train()
+#     ds = O2fDataset(data_config)
+#     DataLoader(ds, batch_size=train_conf.batch_size, shuffle=True)
+#     trainer = Trainer(model, optimizer, ds, None, train_conf)
+#     trainer.train()

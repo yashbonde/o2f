@@ -3,3 +3,6 @@ __pycache__/
 .ipynb_*/
 .DS_Store
 data/
+
+# all the model files
+models/
