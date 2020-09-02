@@ -9,7 +9,6 @@ http://arxiv.org/abs/1912.01412
 For more details read: generate_expressions.md
 """
 
-from copy import Error
 import re
 import time
 import errno
@@ -17,7 +16,6 @@ import logging
 import random
 import signal
 from functools import wraps, partial
-from numpy.core.defchararray import encode
 
 import sympy
 from sympy import simplify, Float, Integer, preorder_traversal
@@ -29,7 +27,7 @@ from types import SimpleNamespace
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from utils import show_notification
+from utils import show_notification, timeout, set_seed
 
 logger = logging.getLogger('prepare_data')
 logger.setLevel(logging.INFO)
@@ -72,45 +70,6 @@ VOCAB_TOKENS += [START_TOKEN, PAD_TOKEN, END_TOKEN]  # language modelling
 VOCAB_TOKENS += ["o"] # ??
 VOCAB = {t: i for i, t in enumerate(VOCAB_TOKENS)}
 
-# ---- util ---- #
-def timeout(seconds=10, error_message=os.strerror(errno.ETIME)):
-
-    def decorator(func):
-
-        def _handle_timeout(repeat_id, signum, frame):
-            # logger.warning(f"Catched the signal ({repeat_id}) Setting signal handler {repeat_id + 1}")
-            signal.signal(signal.SIGALRM, partial(_handle_timeout, repeat_id + 1))
-            signal.alarm(seconds)
-            raise TimeoutError(error_message)
-
-        def wrapper(*args, **kwargs):
-            old_signal = signal.signal(signal.SIGALRM, partial(_handle_timeout, 0))
-            old_time_left = signal.alarm(seconds)
-            assert type(old_time_left) is int and old_time_left >= 0
-            if 0 < old_time_left < seconds:  # do not exceed previous timer
-                signal.alarm(old_time_left)
-            start_time = time.time()
-            try:
-                result = func(*args, **kwargs)
-            finally:
-                if old_time_left == 0:
-                    signal.alarm(0)
-                else:
-                    sub = time.time() - start_time
-                    signal.signal(signal.SIGALRM, old_signal)
-                    signal.alarm(max(0, Math.ceil(old_time_left - sub)))
-            return result
-
-        return wraps(func)(wrapper)
-
-    return decorator
-
-
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
 # ---- functions ---- #
 
 
@@ -377,6 +336,11 @@ def is_valid_and_simplify(expr, max_nested_exp=1):
         re.findall(r"\(t\)", simp_str)
     ):
         return False
+
+    # sometimes there is a "zoo"
+    print(simp_str)
+    if "zoo" in simp_str:
+        return False
     
     s2 = simp
     for a in preorder_traversal(simp):
@@ -463,7 +427,7 @@ def create_one_example_wrapper(maxlen, **kwargs):
     try:
         obs, elist = create_one_example(**kwargs)
         if elist == False:
-            raise Error
+            raise Exception
         
         # convert to pre-tensor ready data
         elist_tokens = (
@@ -480,11 +444,18 @@ def create_one_example_wrapper(maxlen, **kwargs):
         }
 
         encoder_input = {v: [] for v in VARIABLES + ["o"]}
+        var_masks = {f"mask_{v}": [] for v in VARIABLES} # this is the variable masker
         for _obs in obs:
             for v in VARIABLES + ["o"]:
-                encoder_input[v].append(_obs.pop(v, 0.))
+                val = _obs.pop(v, 0.)
+                encoder_input[v].append(val)
         for k,v in encoder_input.items():
-            encoder_input[k] = np.round(np.asarray(v).astype(float), ROUND)
+            encoder_input[k] = np.asarray(v)
+            if k != "o":
+                var_masks[f"mask_{k}"] =  np.asarray([1 if sum(v) != 0 else 0])
+        for k, v in var_masks.items():
+            var_masks[k] = np.asarray(v)
+        encoder_input.update(var_masks)
         return decoder_input, encoder_input
     except Exception as e:
         logging.info(f"Exception: {e}", exc_info = True)
@@ -519,7 +490,7 @@ class O2fDataset(Dataset):
                     for l in range(args.lmin, args.lmax + 1, 1):
                         self.dubis[(N, p1, p2, l)] = get_ubi_dist(N, p1, p2, l)
 
-        # quick hacks to force non-singleton expressions, otherwise we have to manu duplicacy
+        # quick hacks to force non-singleton expressions, otherwise we have too many duplicates
         self.pn = abs(np.random.normal(size = (args.Nmax + 1 - args.Nmin)))
         self.pn[0] = 0.1
         self.pn = self.pn / self.pn.sum()
@@ -565,67 +536,58 @@ class O2fDataset(Dataset):
         for k, v in decoder_input.items():
             decoder_input[k] = torch.from_numpy(v).long()
         for k,v in encoder_input.items():
-            encoder_input[k] = torch.from_numpy(v)
+            if "mask" in k:
+                encoder_input[k] = torch.squeeze(torch.from_numpy(v), -1)
+            else:
+                # print(v)
+                v = v.astype(np.float32)
+                encoder_input[k] = torch.unsqueeze(torch.from_numpy(v), -1)
         return encoder_input, decoder_input
 
 
-# if __name__ == "__main__":
-#     print(VOCAB)
-#     args = SimpleNamespace(
-#         Nmin=1,
-#         Nmax=5,
-#         p1min=1,
-#         p1max=3,
-#         p2min=1,
-#         p2max=3,
-#         lmin=1,
-#         lmax=3,
-#         num_samples=40,
-#         dataset_size=50000,
-#         maxlen=20
-#     )
-
-#     dubis = {}
-#     for N in range(args.Nmin, args.Nmax + 1, 1):
-#         for p1 in range(args.p1min, args.p1max + 1, 1):
-#             for p2 in range(args.p2min, args.p2max + 1, 1):
-#                 for l in range(args.lmin, args.lmax + 1, 1):
-#                     dubis[(N, p1, p2, l)] = get_ubi_dist(N, p1, p2, l)
-
-#     # for _ in trange(100, ncols = 100):
-#     for _ in range(20):
-#         N = O2fDataset._get_N(args.Nmin, args.Nmax)
-#         p1 = O2fDataset._get_p1(args.p1min, args.p1max)
-#         p2 = O2fDataset._get_p2(args.p2min, args.p2max)
-#         l = O2fDataset._get_l(args.lmin, args.lmax)
-#         decoder_input, encoder_input = create_one_example_wrapper(
-#             num_samples=args.num_samples,
-#             dubi=dubis[(N, p1, p2, l)],
-#             N=N, l=l, p1=p1, p2=p2,
-#             maxlen=args.maxlen
-#         )
-#         print("---> enc:", {k: v.size() for k, v in _enc.items()})
-#         print("---> dec:", {k: v.size() for k, v in _dec.items()})
-
-
 if __name__ == "__main__":
+    import sys
     import json
     from uuid import uuid4
     os.makedirs("data", exist_ok=True)
 
-    data_config = SimpleNamespace(
-        Nmin=1,
-        Nmax=5,
-        p1min=1,
-        p1max=3,
-        p2min=1,
-        p2max=3,
-        lmin=1,
-        lmax=3,
-        num_samples=40,
-        dataset_size=10000,
-        maxlen=20
-    )
+    try:
+        mode = sys.argv[1]
+    except:
+        mode = "tiny"
+
+    if mode == "tiny":
+        data_config = SimpleNamespace(
+            Nmin=1,
+            Nmax=5,
+            p1min=1,
+            p1max=3,
+            p2min=1,
+            p2max=3,
+            lmin=1,
+            lmax=3,
+            num_samples=40,
+            dataset_size=10,
+            maxlen=20,
+            batch_size = 10
+        )
+    elif mode == "large":
+        data_config = SimpleNamespace(
+            Nmin=1,
+            Nmax=5,
+            p1min=1,
+            p1max=3,
+            p2min=1,
+            p2max=3,
+            lmin=1,
+            lmax=3,
+            num_samples=40,
+            dataset_size=10000,
+            maxlen=20,
+            batch_size=10000
+        )
+    else:
+        raise ValueError("mode should be in [`tiny`,`large`]")
     ds = O2fDataset(data_config)
     # set_seed(12234)
     encoder = {v: [] for v in VARIABLES + ["o"]}
@@ -633,17 +595,18 @@ if __name__ == "__main__":
     start_time = time.time()
     unk_name = str(uuid4())
     print("This run", unk_name)
-    for i, (_enc, _dec) in enumerate(DataLoader(ds, batch_size = 1000, shuffle = True)):
+    for i, (_enc, _dec) in enumerate(DataLoader(ds, batch_size = data_config.batch_size, shuffle = True)):
         # print(f"---> setting seed: {i}")
         # set_seed(i)
-        # print("---> enc:", {k: v.size() for k, v in _enc.items()})
-        # print("---> dec:", {k: v.size() for k, v in _dec.items()})
+        print("---> enc:", {k: (v.size(), v.dtype) for k, v in _enc.items()})
+        print("---> dec:", {k: (v.size(), v.dtype) for k, v in _dec.items()})
 
         # print("--- converting to lists ---")
         enc = {k: v.tolist() for k, v in _enc.items()}
         dec = {k: v.tolist() for k, v in _dec.items()}
 
-        for v in VARIABLES + ["o"]:
+        for v in enc:
+            encoder.setdefault(v, [])
             encoder[v].extend(enc[v])
         for k in decoder.keys():
             decoder[k].extend(dec[k])

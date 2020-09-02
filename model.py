@@ -1,13 +1,16 @@
 """simple transformer encoder-decoder model
 @yashbonde-31.08.2020"""
 
-import torch
+import time
 import math
 import numpy as np
+from tqdm import tqdm
 
+import torch
 from torch import nn
-from torch.nn import functional as F
 from torch.nn.modules.loss import CrossEntropyLoss
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from prepare_data import VOCAB
 
@@ -30,11 +33,11 @@ class TransformerEncoderDecoderModel(nn.Module):
         )
 
         # for encoder embedding
-        self.linx = nn.Linear(1, config.n_embd)
-        self.liny = nn.Linear(1, config.n_embd)
-        self.linz = nn.Linear(1, config.n_embd)
-        self.lint = nn.Linear(1, config.n_embd)
-        self.lino = nn.Linear(1, config.n_embd)
+        self.linx = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+        self.liny = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+        self.linz = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+        self.lint = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+        self.lino = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
         self.embd = nn.Embedding(5, config.n_embd)
 
         # for decoder embedding
@@ -48,6 +51,7 @@ class TransformerEncoderDecoderModel(nn.Module):
         # params
         self.apply(self._init_weights)
         self.maxlen = config.maxlen
+        self.n_embd = config.n_embd
         print(f"number of parameters: {sum(p.numel() for p in self.parameters())}")
 
     def _init_weights(self, module):
@@ -119,14 +123,15 @@ class TransformerEncoderDecoderModel(nn.Module):
             raise ValueError("Current input is longer than maximum allowed length")
 
         # encoder embedding
-        embd_shape = x[:, :, -1].shape
+        embd_shape = x.size()[:2]
+        print(x.size(), embd_shape)
         x = self.linx(x) + self.embd(torch.ones(embd_shape).long() * 0) # [B, N, n_embd]
         y = self.liny(y) + self.embd(torch.ones(embd_shape).long() * 1) # [B, N, n_embd]
         z = self.linz(z) + self.embd(torch.ones(embd_shape).long() * 2) # [B, N, n_embd]
         t = self.lint(t) + self.embd(torch.ones(embd_shape).long() * 3) # [B, N, n_embd]
         o = self.lino(o) + self.embd(torch.ones(embd_shape).long() * 4) # [B, N, n_embd]
 
-        # next we mask the output
+        # mask encoder input based on wether the variables are present or not
         x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
         y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
         z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
@@ -161,6 +166,99 @@ class TransformerEncoderDecoderModel(nn.Module):
             loss = loss_lm_fn(input = lm_logits, target = targets)
         return lm_logits, loss
 
+# ---- trainer ---- #
+class Trainer:
+    def __init__(self, model, optimizer, train_dataset, test_dataset, config):
+        self.model = model
+        self.optimizer = optimizer
+        self.train_dataset = train_dataset
+        self.test_dataset = test_dataset
+        self.config = config
+
+        self.device = "cpu"
+        if torch.cuda.is_available():
+            self.device = torch.cuda.current_device()
+            self.model = torch.nn.DataParallel(self.model).to(self.device)
+
+    def save_checkpoint(self):
+        raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        print(f"Saving Model at {self.config.ckpt_path}")
+        torch.save(raw_model.state_dict(), self.config.ckpt_path)
+
+    def train(self):
+        model, config = self.model, self.config
+        raw_model = model.module if hasattr(self.model, "module") else model
+        # optimizer = raw_model.configure_optimizers(config)
+        optimizer = self.optimizer
+        global_step = 1
+        lr = config.learning_rate
+
+        tbtrue = True if hasattr(config, "tb_dir") else False
+        if tbtrue:
+            tb = SummaryWriter(logdir = config.tb_dir, flush_secs = 20)
+
+        def run_epoch(split):
+            is_train = split == "train"
+            model.train(is_train)
+            data = self.train_dataset if is_train else self.test_dataset
+            dl = DataLoader(
+                data,
+                shuffle = True,
+                pin_memory = True,
+                batch_size = config.batch_size,
+                num_workers = config.num_workers
+            )
+
+            losses = []
+            pbar = tqdm(enumerate(dl), total = len(dl) if is_train else enumerate(dl))
+            for it, (enc, dec) in pbar:
+                print("---> enc:", {k: (v.size(), v.dtype) for k, v in enc.items()})
+                print("---> dec:", {k: (v.size(), v.dtype) for k, v in dec.items()})
+
+                with torch.set_grad_enabled(is_train):
+                    logits, loss = model(
+                        **enc,
+                        **{k: v[:, :-1] for k, v in dec.items()},
+                        targets=dec["input_ids"][:, 1:],
+                        verbose=True
+                    )
+                    losses.append(loss.item())
+
+                if is_train:
+                    if tbtrue:
+                        # add things to tb
+                        tb.add_scalar("loss", loss.item(), global_step=global_step, walltime=time.time())
+                        tb.add_scalar("lr", lr, global_step=global_step, walltime=time.time())
+
+                    # back prob and update the gradient
+                    for p in model.parameters(): # better than model.zero_grad()
+                        p.grad = None
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_norm_clip)
+                    optimizer.step()
+
+                    # use the noam scheme from original transformers papers
+                    lr = min(global_step**(-0.5), global_step/(config.warmup_steps ** 1.5)) * (model.n_embd ** -0.5) * 0.1
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = lr
+            
+            if not is_train:
+                test_loss = float(np.mean(losses))
+                return test_loss
+
+        # now write wrapper for each epoch
+        best_loss = float("inf")
+        for epoch in range(config.max_epochs):
+            run_epoch("train")
+            if self.test_dataset is not None:
+                test_loss = run_epoch("test")
+            
+            # early stopping based on the test loss of just save always if no test set is provided
+            good_model = self.test_dataset is None or test_loss < best_loss
+            if self.config.ckpt_path is not None and good_model:
+                best_loss = test_loss
+                self.save_checkpoint()
+
 
 # ---- configs ---- #
 class Config:
@@ -181,6 +279,46 @@ class Config:
     def __repr__(self):
         return "----- CONFIGURATION -----\n" + \
             "\n".join([f"{k}\t{getattr(self, k)}" for k in self.attrs + self.pre_attr])
+
+
+class TrainerConfig:
+    max_epochs = 10
+    batch_size = 64
+    learning_rate = 3e-4
+    betas = (0.9, 0.95)
+    grad_norm_clip = 1.0
+    weight_decay = 0.1 # only applied on matmul weights
+
+    lr_decay = False
+    warmup_steps = 1000
+
+    ckpt_path = None
+    num_workers = 0 # for DataLoader
+
+    def __init__(self, **kwargs):
+        self.attrs = []
+        for k,v in kwargs.items():
+            setattr(self, k, v)
+            self.attrs.append(k)
+
+    def __repr__(self):
+        return "---- TRAINER CONFIGURATION ----\n" + \
+            "\n".join([f"{k}\t{getattr(self, k)}" for k in [
+                "max_epochs",
+                "batch_size",
+                "learning_rate",
+                "betas",
+                "grad_norm_clip",
+                "weight_decay",
+                "lr_decay",
+                "warmup_tokens",
+                "final_tokens",
+                "ckpt_path",
+                "num_workers",
+            ] + self.attrs
+        ])
+
+
 
 if __name__ == "__main__":
     config = Config(batch_size = 4, num_samples = 14)
@@ -215,12 +353,11 @@ if __name__ == "__main__":
             ),
             "attention_mask": torch.from_numpy(np.asarray(attention_mask).astype(np.float32))
         }
-
     
     print("---- Encoder ----")
     encoder_inputs = get_dummy_encoder_input()
     for k, v in encoder_inputs.items():
-        print(f"{k} --> {v.shape}")
+        print(f"{k} --> {(v.shape, v.dtype)}")
 
     
     print("---- DECODER ----")
@@ -239,6 +376,26 @@ if __name__ == "__main__":
     print("Predictions:", torch.argmax(logits,dim  = -1), f"Loss: {loss}")
 
     # okay cool, if this works till now then we can start training this shit
-    optim = model.configure_optimizers()
+    from types import SimpleNamespace
+    from prepare_data import O2fDataset
 
+    data_config = SimpleNamespace(
+        Nmin=1,
+        Nmax=4,
+        p1min=1,
+        p1max=3,
+        p2min=1,
+        p2max=3,
+        lmin=1,
+        lmax=3,
+        num_samples=40,
+        dataset_size=10,
+        maxlen=20
+    )
+    train_conf = TrainerConfig(max_epochs=1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=train_conf.learning_rate, betas=train_conf.betas)
 
+    ds = O2fDataset(data_config)
+    DataLoader(ds, batch_size=train_conf.batch_size, shuffle=True)
+    trainer = Trainer(model, optimizer, ds, None, train_conf)
+    trainer.train()
