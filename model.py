@@ -60,13 +60,13 @@ class CausalSelfAttention(nn.Module):
         # this is going to be the case with encoders and decoder bottom layer
         if memory == None:
             memory = tgt
-        B, target_seqlen, C = tgt.size()
-        B, memory_seqlen, C = memory.size()
+        Btgt, target_seqlen, C = tgt.size()
+        Bmem, memory_seqlen, _ = memory.size()
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q = self.query(tgt).view(B, target_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        k = self.key(memory).view(B, memory_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = self.value(memory).view(B, memory_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = self.query(tgt).view(Btgt, target_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k = self.key(memory).view(Bmem, memory_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = self.value(memory).view(Bmem, memory_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         # causal self-attention; Self-attend: (B, nh, T_tgt, hs) x (B, nh, hs, T_mem) -> (B, nh, T_tgt, T_mem)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
@@ -81,7 +81,7 @@ class CausalSelfAttention(nn.Module):
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
         y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, target_seqlen, C) # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().view(Btgt, target_seqlen, C) # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_drop(self.proj(y))
@@ -176,7 +176,8 @@ class TransformerEncoderDecoderModel(nn.Module):
         self.apply(self._init_weights)
         self.decoder_maxlen = config.decoder_maxlen
         self.n_embd = config.n_embd
-        logging.info(f"number of parameters: {sum(p.numel() for p in self.parameters())}")
+        self.num_params = sum(p.numel() for p in self.parameters())
+        logging.info(f"number of parameters: {self.num_params}")
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -300,11 +301,69 @@ class TransformerEncoderDecoderModel(nn.Module):
             targets = targets.contiguous().view(-1)
             att_loss = attention_mask.contiguous().view(-1) # flatten for loss
 
-            # the thing to note here is that 
+            # we flatten the loss and apply attention mask because we do not need
+            # to train model on [PAD] tokens
             loss = F.cross_entropy(lm_logits, targets, reduce=False)
             loss = loss * att_loss
             loss = torch.mean(loss)
         return lm_logits, loss
+
+
+    def enc_out(self,
+        x, y, z, t, o, mask_x, mask_y, mask_z, mask_t,
+        verbose = False
+    ):
+        """method for a single encoder forward pass, useful when beam decoding"""
+        # encoder embedding
+        embd_shape = x.size()[:2]
+        x = self.linx(x) + self.embd(torch.ones(embd_shape).long() * 0) # [B, N, n_embd]
+        y = self.liny(y) + self.embd(torch.ones(embd_shape).long() * 1) # [B, N, n_embd]
+        z = self.linz(z) + self.embd(torch.ones(embd_shape).long() * 2) # [B, N, n_embd]
+        t = self.lint(t) + self.embd(torch.ones(embd_shape).long() * 3) # [B, N, n_embd]
+        o = self.lino(o) + self.embd(torch.ones(embd_shape).long() * 4) # [B, N, n_embd]
+
+        # mask encoder input based on wether the variables are present or not
+        x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
+        y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
+        z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
+        t = x * mask_t.view(-1, 1, 1) # [B, N, n_embd]
+        src = x + y + z + t + o # [B, N, n_embd]
+        if verbose: print(f"Source: {src.size()}")
+
+        enc_out = self.encoder(src)
+        return enc_out
+
+    def dec_out(self, enc_out, input_ids, attention_mask, verbose = False):
+        B, Ttgt = input_ids.size()
+        # decoder embedding
+        token_embeddings = self.wte(input_ids) # each index maps to a (learnable) vector
+        position_embeddings = self.pos_emb[:, :Ttgt, :] # each position maps to a (learnable) vector
+        tgt = token_embeddings + position_embeddings
+
+        # get the padding mask
+        B, trgsz = attention_mask.size()
+        lens = torch.argmax(attention_mask, dim=1)  # [B,]
+        pad_mask = torch.ones((B, trgsz, trgsz), requires_grad=False)
+        for b, l in zip(range(B), lens):
+            pad_mask[b, :l, :l] = 0
+        pad_mask[pad_mask == 1.] = -1e10
+
+        if verbose:
+            print(f"Target: {tgt.size()}")
+            print(f"pad_mask: {pad_mask.size()}")
+            print(f"attention_mask: {attention_mask.size()}")
+
+        # decoder output and langauge model head
+        dec_out = self.decoder((tgt, enc_out, pad_mask))[0]  # returns a tuple
+        lm_logits = self.lm_head(self.ln_f(dec_out))
+
+        del pad_mask # save space for memory
+        return lm_logits
+
+
+    @torch.no_grad()
+    def o2f(self):
+        pass
 
 
 # ---- trainer ---- #

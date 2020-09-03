@@ -338,7 +338,7 @@ def is_valid_and_simplify(expr, max_nested_exp=1):
         return False
 
     # sometimes there is a "zoo"
-    print(simp_str)
+    # print(simp_str)
     if "zoo" in simp_str:
         return False
     
@@ -435,7 +435,7 @@ def create_one_example_wrapper(maxlen, **kwargs):
             [VOCAB[END_TOKEN], ]
         )[:maxlen + 1]
         elist_tokens += [VOCAB[PAD_TOKEN],]*(maxlen + 1 - len(elist_tokens))
-        print(":::::::", elist, len(elist_tokens))
+        # print(":::::::", elist, len(elist_tokens))
         attention_mask = [1 for t in elist_tokens if t != VOCAB[PAD_TOKEN]]
         attention_mask += [0,] * (len(elist_tokens) - len(attention_mask))
         decoder_input = {
@@ -543,6 +543,21 @@ class O2fDataset(Dataset):
                 v = v.astype(np.float32)
                 encoder_input[k] = torch.unsqueeze(torch.from_numpy(v), -1)
         return encoder_input, decoder_input
+
+
+class DataConfig():
+    Nmin=1
+    Nmax=5
+    p1min=1
+    p1max=3
+    p2min=1
+    p2max=3
+    lmin=1
+    lmax=3
+    num_samples=40
+    dataset_size=10
+    maxlen=20
+    batch_size = 10
 
 
 if __name__ == "__main__":
