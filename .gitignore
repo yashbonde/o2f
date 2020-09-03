@@ -5,4 +5,4 @@ __pycache__/
 data/
 
 # all the model files
-models/
+*.pt

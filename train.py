@@ -3,18 +3,24 @@
 
 import os
 import json
+import logging
 import numpy as np
 from argparse import ArgumentParser
 
 import torch
+from torch._C import dtype
 from torch.utils.data import Dataset, DataLoader
 
-from model import Config, TrainerConfig, TransformerEncoderDecoderModel, Trainer
+from model import Config, TrainerConfig, Trainer
+from model import TransformerEncoderDecoderModel
+from utils import show_notification
+
+logging.basicConfig(level = logging.INFO)
 
 args = ArgumentParser(description="script to train o2f model")
 
 # ---- args ---- #
-args.add_argument("--model_folder", default=None, type=str,
+args.add_argument("--model_folder", default="models", type=str,
                   help="folder where all models are")
 args.add_argument("--name", default=None, type=str,
                   help="folder for this model")
@@ -24,19 +30,23 @@ args.add_argument("--train_split", default=0.9, type=float,
                   help="train size split")
 
 # ---- config ---- #
-args.add_argument("--n_embd", default=64, type=int,
+args.add_argument("--n_embd", default=128, type=int,
                   help="embedding dimension of the model")
-args.add_argument("--n_head", default=2, type=int,
+args.add_argument("--n_head", default=8, type=int,
                   help="number of heads for multihead attention")
 args.add_argument("--n_layer", default=6, type=int,
                   help="number of stacks in encoder and decoder")
+args.add_argument("--encoder_maxlen", default=40, type=int,
+                  help="maximum length of encoder input")
+args.add_argument("--decoder_maxlen", default=20, type=int,
+                  help="maximum length of decoder input")
 args.add_argument("--pdrop", default=0.1, type=float,
                   help="dropout probability")
 
 # ---- trainer ---- #
-args.add_argument("--epochs", default=10, type=int,
+args.add_argument("--epochs", default=20, type=int,
                   help="number of epochs to train the model")
-args.add_argument("--batch_size", default=64, type=int,
+args.add_argument("--batch_size", default=128, type=int,
                   help="batch size for training")
 args.add_argument("--learning_rate", default=3e-4,
                   type=float, help="initial learning rate")
@@ -46,7 +56,7 @@ args.add_argument("--beta2", default=0.95, type=float,
                   help="beta_2 parameter for AdamW")
 args.add_argument("--grad_norm_clip", default=1.0,
                   type=float, help="gradient clipping value")
-args.add_argument("--warmup_steps", default=1000,
+args.add_argument("--warmup_steps", default=50,
                   type=int, help="warmup steps")
 args = args.parse_args()
 
@@ -65,11 +75,13 @@ config = Config(
     n_embd=args.n_embd,
     n_head=args.n_head,
     n_layer=args.n_layer,
-    pdrop=args.pdrop
+    pdrop=args.pdrop,
+    encoder_maxlen = args.encoder_maxlen,
+    decoder_maxlen=args.decoder_maxlen
 )
 
-print(trainer_conf)
-print(config)
+logging.info(trainer_conf)
+logging.info(config)
 
 # make dirs
 os.makedirs(args.model_folder, exist_ok=True)
@@ -81,6 +93,7 @@ class Ds(Dataset):
         if mode not in ["test", "train"]:
             raise ValueError("Dataset mode onl")
         with open(args.data_json, "r") as f:
+            logging.info(f"Loading file for: `{mode}` mode")
             data = json.load(f)
 
         # convert to line wise indexing
@@ -124,29 +137,37 @@ class Ds(Dataset):
 
 # create models and dataloader
 model = TransformerEncoderDecoderModel(config)
-optimizer = torch.optim.AdamW(
-    model.parameters(),
-    lr=trainer_conf.learning_rate,
-    betas=trainer_conf.betas
-)
+optimizer = None
+# optimizer = torch.optim.AdamW(
+#     model.parameters(),
+#     lr=trainer_conf.learning_rate,
+#     betas=trainer_conf.betas
+# )
 # DataLoader(, batch_size=trainer_conf.batch_size, shuffle=True)
 ds_train = Ds("train")
 ds_test = Ds("test")
 
-# print("======= TRAIN =======")
-# for i, (_enc, _dec) in enumerate(DataLoader(ds_train, batch_size=32)):
-#     print("---> enc:", {k: (v.size(), v.dtype) for k, v in _enc.items()})
-#     print("---> dec:", {k: (v.size(), v.dtype) for k, v in _dec.items()})
+# logging.info("======= TRAIN =======")
+# for i, (_enc, _dec) in enumerate(DataLoader(ds_train, batch_size=32, shuffle = True)):
+#     for k, v in _enc.items():
+#         logging.info(f"{k} ({v.size()},{v.dtype})")
+#     for k, v in _dec.items():
+#         logging.info(f"{k} ({v.size()},{v.dtype})")
 #     break
 
-# print("======= TEST =======")
-# for i, (_enc, _dec) in enumerate(DataLoader(ds_test, batch_size=32)):
-#     print("---> enc:", {k: (v.size(), v.dtype) for k, v in _enc.items()})
-#     print("---> dec:", {k: (v.size(), v.dtype) for k, v in _dec.items()})
+# logging.info("======= TEST =======")
+# for i, (_enc, _dec) in enumerate(DataLoader(ds_test, batch_size=32, shuffle=True)):
+#     for k, v in _enc.items():
+#         logging.info(f"{k} ({v.size()},{v.dtype})")
+#     for k, v in _dec.items():
+#         logging.info(f"{k} ({v.size()},{v.dtype})")
 #     break
 
-trainer = Trainer(model, optimizer, ds_train, ds_test, trainer_conf)
-trainer.train()
+trainer = Trainer(model, ds_train, ds_test, trainer_conf, optimizer=optimizer)
+try:
+    trainer.train()
+except Exception as e:
+    logging.error(f"Exception: {e} has occured", exc_info = True)
+    show_notification("o2f Training", f"Exception {e} has occured")
 
-
-
+show_notification("o2f Training", "Training Complete")

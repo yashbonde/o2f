@@ -3,16 +3,135 @@
 
 import time
 import math
+import logging
 import numpy as np
 from tqdm import tqdm
 
 import torch
 from torch import nn
-from torch.nn.modules.loss import CrossEntropyLoss
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from prepare_data import VOCAB
+
+
+class CausalSelfAttention(nn.Module):
+    """
+    A vanilla multi-head masked self-attention layer with a projection at the end.
+    It is possible to use torch.nn.MultiheadAttention here but I am including an
+    explicit implementation here to show that there is nothing too scary here.
+    """
+
+    def __init__(self, config, mode = "encoder"):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        # key, query, value projections for all heads
+        self.key = nn.Linear(config.n_embd, config.n_embd)
+        self.query = nn.Linear(config.n_embd, config.n_embd)
+        self.value = nn.Linear(config.n_embd, config.n_embd)
+        # regularization
+        self.attn_drop = nn.Dropout(config.pdrop)
+        self.resid_drop = nn.Dropout(config.pdrop)
+        # output projection
+        self.proj = nn.Linear(config.n_embd, config.n_embd)
+
+        if mode == "encoder":
+            # causal mask to ensure that attention is only applied to the left in the input sequence
+            self.register_buffer(
+                "mask",
+                torch.tril(torch.ones(config.encoder_maxlen, config.encoder_maxlen)).view(
+                    1, 1, config.encoder_maxlen, config.encoder_maxlen
+                ))
+            self.is_decoder = False
+        elif mode == "decoder":
+            self.register_buffer(
+                "mask",
+                torch.tril(torch.ones(config.decoder_maxlen, config.decoder_maxlen)).view(
+                    1, 1, config.decoder_maxlen, config.decoder_maxlen
+                ))
+            self.is_decoder = True
+        else:
+            raise ValueError(f"mode can be 'decoder'/'encoder' got: {mode}")
+
+        self.n_head = config.n_head
+
+    def forward(self, tgt, memory = None, forward_mask = False, pad_mask = None):
+        # this is going to be the case with encoders and decoder bottom layer
+        if memory == None:
+            memory = tgt
+        B, target_seqlen, C = tgt.size()
+        B, memory_seqlen, C = memory.size()
+
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        q = self.query(tgt).view(B, target_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k = self.key(memory).view(B, memory_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = self.value(memory).view(B, memory_seqlen, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        # causal self-attention; Self-attend: (B, nh, T_tgt, hs) x (B, nh, hs, T_mem) -> (B, nh, T_tgt, T_mem)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        
+        if forward_mask:
+            att = att.masked_fill(self.mask[:,:,:target_seqlen,:target_seqlen] == 0, float('-inf'))
+
+        if pad_mask is not None:
+            # pad_mask: [B, target_seqlen] --> [B, target_seqlen, target_seqlen]
+            att = att + pad_mask.unsqueeze(1)
+
+        att = F.softmax(att, dim=-1)
+        att = self.attn_drop(att)
+        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = y.transpose(1, 2).contiguous().view(B, target_seqlen, C) # re-assemble all head outputs side by side
+
+        # output projection
+        y = self.resid_drop(self.proj(y))
+        return y
+
+
+class EncoderBlock(nn.Module):
+    """ an unassuming Transformer block """
+
+    def __init__(self, config):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(config.n_embd)
+        self.ln2 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config, mode = "encoder")
+        self.mlp = nn.Sequential(
+            nn.Linear(config.n_embd, 4 * config.n_embd),
+            nn.GELU(),
+            nn.Linear(4 * config.n_embd, config.n_embd),
+            nn.Dropout(config.pdrop),
+        )
+
+    def forward(self, x):
+        x = x + self.attn(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
+        return x
+
+
+class DecoderBlock(nn.Module):
+    """ an unassuming Transformer block """
+
+    def __init__(self, config):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(config.n_embd)
+        self.ln2 = nn.LayerNorm(config.n_embd)
+        self.ln3 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config, mode="decoder")
+        self.attn = CausalSelfAttention(config, mode="decoder")
+        self.mlp = nn.Sequential(
+            nn.Linear(config.n_embd, 4 * config.n_embd),
+            nn.GELU(),
+            nn.Linear(4 * config.n_embd, config.n_embd),
+            nn.Dropout(config.pdrop),
+        )
+
+    def forward(self, d):
+        x, mem, pad_mask = d
+        x = x + self.attn(self.ln1(x), forward_mask = True, pad_mask = pad_mask)
+        x = x + self.attn(self.ln2(x), mem)
+        x = x + self.mlp(self.ln3(x))
+        return (x, mem, pad_mask)
 
 
 class TransformerEncoderDecoderModel(nn.Module):
@@ -22,15 +141,20 @@ class TransformerEncoderDecoderModel(nn.Module):
         # because of it's inherent simplicity. I tried to play around with the minGPT
         # but it was too tiring, note that is just the enc-dec model, we still need
         # to build embedddings and heads
-        self.trans_model = nn.Transformer(
-            d_model = config.n_embd,
-            nhead = config.n_head,
-            num_encoder_layers= config.n_layer,
-            num_decoder_layers=config.n_layer,
-            dim_feedforward=config.n_embd * 4,
-            activation= "gelu",
-            dropout= config.pdrop
-        )
+        # self.trans_model = nn.Transformer(
+        #     d_model = config.n_embd,
+        #     nhead = config.n_head,
+        #     num_encoder_layers= config.n_layer,
+        #     num_decoder_layers=config.n_layer,
+        #     dim_feedforward=config.n_embd * 4,
+        #     activation= "gelu",
+        #     dropout= config.pdrop
+        # )
+
+        # oh yeah, I got it working!
+
+        self.encoder = nn.Sequential(*[EncoderBlock(config) for _ in range(config.n_layer)])
+        self.decoder = nn.Sequential(*[DecoderBlock(config) for _ in range(config.n_layer)])
 
         # for encoder embedding
         self.linx = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
@@ -42,7 +166,7 @@ class TransformerEncoderDecoderModel(nn.Module):
 
         # for decoder embedding
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
-        self.pos_emb = nn.Parameter(torch.zeros(1, config.maxlen, config.n_embd))
+        self.pos_emb = nn.Parameter(torch.zeros(1, config.decoder_maxlen, config.n_embd))
 
         # for decoder head
         self.ln_f = nn.LayerNorm(config.n_embd)
@@ -50,9 +174,9 @@ class TransformerEncoderDecoderModel(nn.Module):
 
         # params
         self.apply(self._init_weights)
-        self.maxlen = config.maxlen
+        self.decoder_maxlen = config.decoder_maxlen
         self.n_embd = config.n_embd
-        print(f"number of parameters: {sum(p.numel() for p in self.parameters())}")
+        logging.info(f"number of parameters: {sum(p.numel() for p in self.parameters())}")
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -118,9 +242,8 @@ class TransformerEncoderDecoderModel(nn.Module):
         if verbose:
             print("---- FORWARD ----")
 
-
-        if Ttgt > self.maxlen:
-            raise ValueError("Current input is longer than maximum allowed length")
+        if Ttgt > self.decoder_maxlen:
+            raise ValueError(f"Current input is longer than maximum allowed length, got: {Ttgt}")
 
         # encoder embedding
         embd_shape = x.size()[:2]
@@ -142,32 +265,51 @@ class TransformerEncoderDecoderModel(nn.Module):
         position_embeddings = self.pos_emb[:, :Ttgt, :] # each position maps to a (learnable) vector
         tgt = token_embeddings + position_embeddings
 
+        B, trgsz = attention_mask.size()
+        lens = torch.argmax(attention_mask, dim=1)  # [B,]
+        pad_mask = torch.ones((B, trgsz, trgsz), requires_grad=False)
+        for b, l in zip(range(B), lens):
+            pad_mask[b, :l, :l] = 0
+        pad_mask[pad_mask == 1.] = -1e10
+
         if verbose:
             print(f"Source: {src.size()}, Target: {tgt.size()}")
+            print("pad:", pad_mask.size(), "att:", attention_mask.size())
 
         # run the model and get logits --> we need to transpose because of the 
-        dec_out = self.trans_model(
-            src = src.transpose(0, 1),
-            tgt = tgt.transpose(0, 1),
-            tgt_key_padding_mask=attention_mask
-        ).transpose(0, 1)
+        # dec_out = self.trans_model(
+        #     src = src.transpose(0, 1),
+        #     tgt = tgt.transpose(0, 1),
+        #     tgt_key_padding_mask=attention_mask
+        # ).transpose(0, 1)
+
+        enc_out = self.encoder(src)
+        dec_out = self.decoder((tgt, enc_out, pad_mask))[0] # returns a tuple
+
         lm_logits = self.lm_head(self.ln_f(dec_out))
 
         if verbose:
             print(f"Logits: {lm_logits.size()}")
+
+        del pad_mask # delete and save memory people
 
         # if the targets are given then
         loss = None
         if targets is not None:
             lm_logits = lm_logits.view(-1, lm_logits.size(-1))
             targets = targets.contiguous().view(-1)
-            loss_lm_fn = CrossEntropyLoss()
-            loss = loss_lm_fn(input = lm_logits, target = targets)
+            att_loss = attention_mask.contiguous().view(-1) # flatten for loss
+
+            # the thing to note here is that 
+            loss = F.cross_entropy(lm_logits, targets, reduce=False)
+            loss = loss * att_loss
+            loss = torch.mean(loss)
         return lm_logits, loss
+
 
 # ---- trainer ---- #
 class Trainer:
-    def __init__(self, model, optimizer, train_dataset, test_dataset, config):
+    def __init__(self, model, train_dataset, test_dataset, config, optimizer = None):
         self.model = model
         self.optimizer = optimizer
         self.train_dataset = train_dataset
@@ -181,12 +323,12 @@ class Trainer:
 
     def save_checkpoint(self):
         raw_model = self.model.module if hasattr(self.model, "module") else self.model
-        print(f"Saving Model at {self.config.ckpt_path}")
+        logging.info(f"Saving Model at {self.config.ckpt_path}")
         torch.save(raw_model.state_dict(), self.config.ckpt_path)
 
     def train(self, verbose = False):
         model, config = self.model, self.config
-        optimizer = self.optimizer
+        optimizer = self.optimizer if self.optimizer is not None else model.configure_optimizers(config)
         gs = 0
         lr = config.learning_rate
 
@@ -223,10 +365,16 @@ class Trainer:
                         targets=dec["input_ids"][:, 1:],
                         verbose=verbose
                     )
+
+                    if str(loss.item()) == "nan":
+                        print(enc)
+                        print(dec)
+                        exit()
+
                     losses.append(loss.item())
 
                 if is_train:
-                    if tbtrue:
+                    if tbtrue and gs:
                         # add things to tb
                         tb.add_scalar("loss", loss.item(), global_step=gs, walltime=time.time())
                         tb.add_scalar("lr", lr, global_step=gs, walltime=time.time())
@@ -256,6 +404,7 @@ class Trainer:
             gs, lr = run_epoch("train", gs, lr)
             if self.test_dataset is not None:
                 test_loss = run_epoch("test")
+                logging.info(f"Test loss: {test_loss}")
             
             # early stopping based on the test loss of just save always if no test set is provided
             good_model = self.test_dataset is None or test_loss < best_loss
@@ -275,19 +424,27 @@ class Config:
     n_layer = 6
     pdrop = 0.1
     vocab_size = len(VOCAB)
-    maxlen = 20
+    encoder_maxlen = 40
+    decoder_maxlen = 20
 
     def __init__(self, **kwargs):
         self.attrs = []
-        self.pre_attr = ["n_embd", "n_head", "n_layer", "pdrop", "vocab_size", "maxlen",]
         for k,v in kwargs.items():
             setattr(self, k, v)
             self.attrs.append(k)
 
     def __repr__(self):
-        return "----- MODEL CONFIGURATION -----\n" + \
-            "\n".join([f"{k}\t{getattr(self, k)}" for k in self.attrs + self.pre_attr]) +\
-            "\n"
+        return "---- MODEL CONFIGURATION ----\n" + \
+            "\n".join([f"{k}\t{getattr(self, k)}" for k in list(set([
+                "n_embd",
+                "n_head",
+                "n_layer",
+                "pdrop",
+                "vocab_size",
+                "encoder_maxlen",
+                "decoder_maxlen"
+            ] + self.attrs)) 
+        ]) + "\n"
 
 
 class TrainerConfig:
@@ -405,3 +562,42 @@ class TrainerConfig:
 #     DataLoader(ds, batch_size=train_conf.batch_size, shuffle=True)
 #     trainer = Trainer(model, optimizer, ds, None, train_conf)
 #     trainer.train()
+
+# ------ THERE WAS A NAN ISSUE ------ #
+# if __name__ == "__main__":
+#     config = Config(
+#         n_embd=32,
+#         n_head=1,
+#         n_layer=1,
+#         pdrop=0.1,
+#         vocab_size=39,
+#         maxlen=20
+#     )
+#     model = TransformerEncoderDecoderModel(config)
+
+#     from _nan import * # temp
+
+#     # checking why am I getting nans from forward pass
+#     def nan_hook(self, inp, output):
+#         if not isinstance(output, tuple):
+#             outputs = [output]
+#         else:
+#             outputs = output
+
+#         for i, out in enumerate(outputs):
+#             nan_mask = torch.isnan(out)
+#             if nan_mask.any():
+#                 print("In", self.__class__.__name__)
+#                 raise RuntimeError(f"Found NAN in output {i} at indices: ", nan_mask.nonzero(
+#                 ), "where:", out[nan_mask.nonzero()[:, 0].unique(sorted=True)])
+
+#     # for submodule in model.modules():
+#     #     submodule.register_forward_hook(nan_hook)
+
+#     for k, v in enc.items():
+#         enc[k] = torch.from_numpy(np.asarray(v).astype(np.float32))
+#     for k, v in dec.items():
+#         dec[k] = torch.from_numpy(np.asarray(v)).long()
+
+#     out = model(**{k:v[1:] for k,v in enc.items()}, **{k:v[1:,:-1] for k,v in dec.items()}, verbose = True)
+#     print(out)
