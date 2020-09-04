@@ -20,6 +20,8 @@ from functools import wraps, partial
 import sympy
 from sympy import simplify, Float, Integer, preorder_traversal
 import os
+
+from tqdm.std import trange
 from maths import Math
 import numpy as np
 from types import SimpleNamespace
@@ -584,7 +586,8 @@ if __name__ == "__main__":
             num_samples=40,
             dataset_size=10,
             maxlen=20,
-            batch_size = 10
+            batch_size = 10,
+            buffer_size = 1000
         )
     elif mode == "large":
         data_config = SimpleNamespace(
@@ -599,22 +602,30 @@ if __name__ == "__main__":
             num_samples=100,
             dataset_size=50000,
             maxlen=40,
-            batch_size=1000
+            batch_size=16,
+            buffer_size = 1000
         )
     else:
         raise ValueError("mode should be in [`tiny`,`large`]")
     ds = O2fDataset(data_config)
     # set_seed(12234)
-    encoder = {v: [] for v in VARIABLES + ["o"]}
+    encoder = {}
     decoder = {"input_ids": [], "attention_mask": []}
     start_time = time.time()
     unk_name = str(uuid4())
     print("This run", unk_name)
-    for i, (_enc, _dec) in enumerate(DataLoader(ds, batch_size = data_config.batch_size, shuffle = True)):
+    pbar = trange(
+        data_config.dataset_size // data_config.batch_size + int(data_config.dataset_size % data_config.batch_size != 0)
+    )
+
+    # DataLoader is good when you have to use in testing, but pretty useless to
+    # actually know how long it is going to take when things are hidden
+    for i, (_enc, _dec) in enumerate(DataLoader(ds, batch_size = data_config.batch_size)):
+        pbar.update()
         # print(f"---> setting seed: {i}")
         # set_seed(i)
-        print("---> enc:", {k: (v.size(), v.dtype) for k, v in _enc.items()})
-        print("---> dec:", {k: (v.size(), v.dtype) for k, v in _dec.items()})
+        # print("---> enc:", {k: (v.size(), v.dtype) for k, v in _enc.items()})
+        # print("---> dec:", {k: (v.size(), v.dtype) for k, v in _dec.items()})
 
         # print("--- converting to lists ---")
         enc = {k: v.tolist() for k, v in _enc.items()}
@@ -625,15 +636,16 @@ if __name__ == "__main__":
             encoder[v].extend(enc[v])
         for k in decoder.keys():
             decoder[k].extend(dec[k])
-        
-        with open(f"data/{unk_name}_sample_{i}.json", "w") as f:
-            f.write(json.dumps({
-                "encoder": encoder,
-                "decoder": decoder
-            }))
-            show_notification("o2f Data", f"File saving completed at: data/{unk_name}_sample_{i}.json")
-            encoder = {v: [] for v in VARIABLES + ["o"]}
-            decoder = {"input_ids": [], "attention_mask": []}
+
+        if len(decoder["input_ids"]) >= data_config.buffer_size and mode == "large":
+            with open(f"data/{unk_name}_sample_{i}.json", "w") as f:
+                f.write(json.dumps({
+                    "encoder": encoder,
+                    "decoder": decoder
+                }))
+                show_notification("o2f Data", f"File saving completed at: data/{unk_name}_sample_{i}.json")
+                encoder = {}
+                decoder = {"input_ids": [], "attention_mask": []}
 
     show_notification("o2f Data", f"Script {unk_name} compelte in {time.time() - start_time :.3}s")
 
