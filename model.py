@@ -176,6 +176,7 @@ class TransformerEncoderDecoderModel(nn.Module):
         self.apply(self._init_weights)
         self.decoder_maxlen = config.decoder_maxlen
         self.n_embd = config.n_embd
+        self.use_var_masking = config.use_var_masking
         self.num_params = sum(p.numel() for p in self.parameters())
         logging.info(f"number of parameters: {self.num_params}")
 
@@ -323,10 +324,11 @@ class TransformerEncoderDecoderModel(nn.Module):
         o = self.lino(o) + self.embd(torch.ones(embd_shape).long() * 4) # [B, N, n_embd]
 
         # mask encoder input based on wether the variables are present or not
-        x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
-        y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
-        z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
-        t = x * mask_t.view(-1, 1, 1) # [B, N, n_embd]
+        if self.use_var_masking:
+            x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
+            y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
+            z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
+            t = x * mask_t.view(-1, 1, 1) # [B, N, n_embd]
         src = x + y + z + t + o # [B, N, n_embd]
         if verbose: print(f"Source: {src.size()}")
 
@@ -485,6 +487,7 @@ class Config:
     vocab_size = len(VOCAB)
     encoder_maxlen = 40
     decoder_maxlen = 20
+    use_var_masking = True
 
     def __init__(self, **kwargs):
         self.attrs = []

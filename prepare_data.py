@@ -380,7 +380,7 @@ def prepare_expr_string(estr):
     return seq
 
 
-@timeout(6)
+@timeout(10)
 def create_one_example(
         num_samples,
         dubi, N=3, l=1, p1=1, p2=1,
@@ -589,17 +589,17 @@ if __name__ == "__main__":
     elif mode == "large":
         data_config = SimpleNamespace(
             Nmin=1,
-            Nmax=5,
+            Nmax=6,
             p1min=1,
-            p1max=3,
+            p1max=6,
             p2min=1,
-            p2max=3,
+            p2max=6,
             lmin=1,
-            lmax=3,
-            num_samples=40,
-            dataset_size=10000,
-            maxlen=20,
-            batch_size=10000
+            lmax=6,
+            num_samples=100,
+            dataset_size=50000,
+            maxlen=40,
+            batch_size=1000
         )
     else:
         raise ValueError("mode should be in [`tiny`,`large`]")

@@ -40,6 +40,8 @@ args.add_argument("--encoder_maxlen", default=40, type=int,
                   help="maximum length of encoder input")
 args.add_argument("--decoder_maxlen", default=20, type=int,
                   help="maximum length of decoder input")
+args.add_argument("--use_var_masking", default=False, type=bool,
+                  help="apply mask for variables")
 args.add_argument("--pdrop", default=0.1, type=float,
                   help="dropout probability")
 
@@ -77,7 +79,8 @@ config = Config(
     n_layer=args.n_layer,
     pdrop=args.pdrop,
     encoder_maxlen = args.encoder_maxlen,
-    decoder_maxlen=args.decoder_maxlen
+    decoder_maxlen=args.decoder_maxlen,
+    use_var_masking=args.use_var_masking
 )
 
 logging.info(trainer_conf)
@@ -85,7 +88,7 @@ logging.info(config)
 
 # make dirs
 os.makedirs(args.model_folder, exist_ok=True)
-os.makedirs(trainer_conf.tb_path, exist_ok=True)
+os.makedirs(trainer_conf.tb_path, exist_ok=False)
 
 # load a dataset
 class Ds(Dataset):

@@ -14,12 +14,13 @@
 # limitations under the License.
 
 import re
+import numpy as np
 
 import torch
 from torch import Tensor
 from torch.nn import functional as F
 
-from prepare_data import START_TOKEN, END_TOKEN, PAD_TOKEN, VOCAB, VOCAB_TOKENS, ROUND
+from prepare_data import START_TOKEN, END_TOKEN, PAD_TOKEN, VOCAB, VOCAB_TOKENS, ROUND, prepare_expr_string
 from maths import Math
 
 
@@ -123,6 +124,7 @@ def beam_search(
         beam_size,
         max_length,
         min_length,
+        input_str = None,
         bos_id = VOCAB[START_TOKEN],
         eos_id = VOCAB[END_TOKEN],
         pad_id = VOCAB[PAD_TOKEN],
@@ -149,11 +151,16 @@ def beam_search(
     batch_size = obs["x"].size(0)
     assert batch_size == 1, "works only for one sample at a time"
 
-    input_ids = torch.ones((batch_size * beam_size, 1)).long() * bos_id
-    attention_mask = torch.ones((batch_size * beam_size, 1)).long()
+    if input_str is None:
+        input_ids = torch.ones((batch_size * beam_size, 1)).long() * bos_id
+    else:
+        input_ids = torch.from_numpy(np.asarray([
+            [bos_id,] + [VOCAB[x] for x in prepare_expr_string(input_str)]
+        ])).long()[:max_length]
+    
+    cur_len = input_ids.size(0)
+    attention_mask = torch.ones((batch_size * beam_size, cur_len)).long()
     enc_out = model.enc_out(**obs)  # get the encoder output for cached
-    cur_len = 1
-#     batch_size = input_ids.size(0) # always because we do per observation
 
     # generated hypotheses
     generated_hyps = [
@@ -345,6 +352,7 @@ def predict_expression(
         beam_size,
         max_length,
         min_length,
+        input_str=None,
         bos_id=VOCAB[START_TOKEN],
         eos_id=VOCAB[END_TOKEN],
         pad_id=VOCAB[PAD_TOKEN],
@@ -357,13 +365,37 @@ def predict_expression(
         repetition_penalty=1.4,
         length_penalty=1
     ):
-    """wrapper for beam search"""
+    """wrapper for beam search
+    
+    :parma model: nn.Module object that the model
+    :parma obs: output Encoder dict from O2fDataset
+    :parma beam_size: Beam size to search on
+    :parma max_length: Maximum sequence length to generate
+    :parma min_length: Minimum sequence length to generate
+    :parma input_str: If user has already given some input
+    :parma bos_id: BOS ID
+    :parma eos_id: EOS ID
+    :parma pad_id: PAD ID
+    :parma vocab_size: Vocabulary size
+    :parma do_sample: To perform sampling or not
+    :parma early_stopping: Whether to stop the beam search when at least num_beams sentences are finished per batch or not
+    :parma temperature: The value used to module the next token probabilities
+    :parma top_k: The number of highest probability vocabulary tokens to keep for top-k-filtering
+    :parma top_p: If set to float < 1, only the most probable tokens with probabilities that add up to top_p or
+        higher are kept for generation
+    :parma repetition_penalty: The parameter for repetition penalty. 1.0 means no penalty. See `this paper
+        <https://arxiv.org/pdf/1909.05858.pdf>`__ for more details.
+    :parma length_penalty: Exponential penalty to the length. 1.0 means no penalty.
+        Set to values < 1.0 in order to encourage the model to generate shorter sequences, to a value > 1.0 in
+        order to encourage the model to produce longer sequences.
+    """
     return beam_search(
         model=model,
         obs=obs,
         beam_size=beam_size,
         max_length=max_length,
         min_length=min_length,
+        input_str=input_str,
         bos_id=bos_id,
         eos_id=eos_id,
         pad_id=pad_id,
