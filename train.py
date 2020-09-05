@@ -36,9 +36,9 @@ args.add_argument("--n_head", default=8, type=int,
                   help="number of heads for multihead attention")
 args.add_argument("--n_layer", default=6, type=int,
                   help="number of stacks in encoder and decoder")
-args.add_argument("--encoder_maxlen", default=40, type=int,
+args.add_argument("--encoder_maxlen", default=100, type=int,
                   help="maximum length of encoder input")
-args.add_argument("--decoder_maxlen", default=20, type=int,
+args.add_argument("--decoder_maxlen", default=40, type=int,
                   help="maximum length of decoder input")
 args.add_argument("--use_var_masking", default=False, type=bool,
                   help="apply mask for variables")
@@ -58,7 +58,7 @@ args.add_argument("--beta2", default=0.95, type=float,
                   help="beta_2 parameter for AdamW")
 args.add_argument("--grad_norm_clip", default=1.0,
                   type=float, help="gradient clipping value")
-args.add_argument("--warmup_steps", default=50,
+args.add_argument("--warmup_steps", default=60,
                   type=int, help="warmup steps")
 args = args.parse_args()
 
