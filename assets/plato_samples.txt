@@ -1,0 +1,584 @@
+========================================
+ACTUAL: z * log ( y ) | INPUT: z * log
+torch.Size([10, 4])
+----- PREDICTIONS -----
+z * log ( y )
+z * log ( y )
+z * log ( y )
+z * log ( log ( y )
+z * log ( log ( y )
+z * log ( log ( y ) )
+z * log ( log ( y ) )
+z * log ( y + log ( y )
+z * log ( y + log ( y ) )
+z * log ( log ( log ( y ) ) )
+
+========================================
+ACTUAL: exp ( y ) - 2.718 | INPUT: exp ( y
+torch.Size([10, 4])
+----- PREDICTIONS -----
+exp ( y ) - 2 * sin ( y )
+exp ( y ) - 2 * sin ( y )
+exp ( y ) - 2 * cos ( y )
+exp ( y ) - 2 * tan ( y )
+exp ( y ) - 2 * tan ( y )
+exp ( y ) - 2 * sin ( y )
+exp ( y ) - 2 * sin ( y ) - 2
+exp ( y ) - 2 * cos ( y - 2 )
+exp ( y ) - 2 * sin ( y ) - 1
+exp ( y ) - 2 * cos ( y ) - 2
+
+========================================
+ACTUAL: 1 . 0 * z / tan ( y ) + 2 . 0 8 1 | INPUT: 1 . 0
+torch.Size([10, 4])
+----- PREDICTIONS -----
+1 . 0 * z / tan ( y + exp ( z )
+1 . 0 * z / tan ( y ) + exp ( z )
+1 . 0 * z / tan ( y ) + tan ( z )
+1 . 0 * z / tan ( y + exp ( z ) + y )
+1 . 0 * z / tan ( y + exp ( z ) / y )
+1 . 0 * z / tan ( y + exp ( z ) + sin ( y )
+1 . 0 * z / tan ( y + exp ( z ) + tan ( z )
+1 . 0 * z / tan ( y + exp ( z ) + cos ( y )
+1 . 0 * z / tan ( y + exp ( z ) + tan ( y )
+1 . 0 * z / tan ( y + exp ( z ) + sin ( z )
+
+========================================
+ACTUAL: y * log ( y ) | INPUT: y * log
+torch.Size([10, 4])
+----- PREDICTIONS -----
+y * log ( y )
+y * log ( y )
+y * log ( y )
+y * log ( y )
+y * log ( y )
+y * log ( y )
+y * log ( y - y )
+y * log ( y ) ** 2
+y * log ( y ) - 0 . 1
+y * log ( y - log ( y ) )
+
+========================================
+ACTUAL: y * exp ( z ) | INPUT: y * exp
+torch.Size([10, 4])
+----- PREDICTIONS -----
+y * exp ( z + sin ( z )
+y * exp ( z + sin ( z )
+y * exp ( z + exp ( z )
+y * exp ( z + exp ( z )
+y * exp ( z + cos ( z )
+y * exp ( z + exp ( z ) )
+y * exp ( z + sin ( z ) )
+y * exp ( z + sin ( z ) )
+y * exp ( z + cos ( z ) )
+y * exp ( z + exp ( z ) + 1 )
+
+========================================
+ACTUAL: ( - x + cos ( x ) + 3.142 ) / x | INPUT: ( - x
+torch.Size([10, 4])
+----- PREDICTIONS -----
+( - x ) / cos ( x ) + 2.718
+( - x + 2.718 ) / tan ( x )
+( - x ) / cos ( x ) + 3.142
+( - x + 2.718 ) / sin ( x ) + 2.718
+( - x + 2.718 ) / sin ( x ) + 3.142
+( - x + 2.718 ) / tan ( x ) + 3.142
+( - x + 2.718 ) / sin ( x ) + 2
+( - x ) * ( sin ( x ) + 6 )
+( - x ) * ( tan ( x ) + 3.142 )
+( - x + 2.718 ) / tan ( x ) + 5
+
+========================================
+ACTUAL: sqrt ( exp ( x ) ) | INPUT: sqrt ( exp
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sqrt ( exp ( x ) ** 2 )
+sqrt ( exp ( x ) + 1 )
+sqrt ( exp ( x ) + 1 )
+sqrt ( exp ( x ) + 1 )
+sqrt ( exp ( x ) + 1 )
+sqrt ( exp ( x ) + 0 . 1
+sqrt ( exp ( x ) + tan ( x )
+sqrt ( exp ( x ) + 0 . 1 )
+sqrt ( exp ( x ) + tan ( x ) )
+sqrt ( exp ( x ) + 1 * exp ( x )
+
+========================================
+ACTUAL: sin ( x ) | INPUT: sin ( x
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sin ( x ) * sin ( x )
+sin ( x ) + tan ( x )
+sin ( x ) / cos ( x )
+sin ( x ) / cos ( x )
+sin ( x ) + 0 . 0 . 3
+sin ( x ) * sin ( tan ( x ) )
+sin ( x ) * cos ( x + exp ( x )
+sin ( x ) * cos ( x + sin ( x )
+sin ( x ) + 0 . 0 . 1 tan ( x )
+sin ( x ) * cos ( x + exp ( x ) )
+
+========================================
+ACTUAL: sin ( z ) ** ( 0 . 0 7 9 / z ** 2 ) | INPUT: sin ( z
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sin ( z ) + z
+sin ( z ) ** z
+sin ( z ) ** z
+sin ( z ) ** log ( z )
+sin ( z ) + sin ( z )
+sin ( z ) + sin ( log ( z ) )
+sin ( z ) ** log ( log ( z ) )
+sin ( z ) ** log ( sqrt ( z ) )
+sin ( z ) + sin ( log ( log ( z ) ) )
+sin ( z ) + sin ( log ( log ( z ) ) ) )
+
+========================================
+ACTUAL: - cos ( t ) | INPUT: - cos (
+torch.Size([10, 4])
+----- PREDICTIONS -----
+- cos ( t + exp ( t ) )
+- cos ( t ) - exp ( t )
+- cos ( t + tan ( t ) )
+- cos ( t ) - cos ( t )
+- cos ( t + exp ( t ) - 2 )
+- cos ( t + tan ( t ) - 2 )
+- cos ( t + exp ( t ) ) - 1 )
+- cos ( t + tan ( t ) ) - 1 )
+- cos ( t + exp ( t ) ) - 2 )
+- cos ( t + tan ( t ) + exp ( t ) ) )
+
+========================================
+ACTUAL: t + y - exp ( z ) | INPUT: t + y
+torch.Size([10, 4])
+----- PREDICTIONS -----
+t + y - z - cos ( t - z )
+t + y - z - exp ( z + 2.718 )
+t + y - z - exp ( z - 2 )
+t + y - z - exp ( z + 1 )
+t + y - z - cos ( t - cos ( z )
+t + y - z - cos ( t - exp ( y )
+t + y - z - cos ( t - exp ( z ) )
+t + y - z - cos ( t - exp ( y ) )
+t + y - z - exp ( t - cos ( z ) )
+t + y - z - cos ( t - cos ( z ) )
+
+========================================
+ACTUAL: 0 . 3 1 8 * y * log ( y ) / z | INPUT: 0 . 3
+torch.Size([10, 4])
+----- PREDICTIONS -----
+0 . 3 * y / ( sqrt ( y ) )
+0 . 3 * y * y / ( log ( y ) )
+0 . 3 * y * y / ( sqrt ( y ) )
+0 . 3 * y * y / ( log ( y ) ) ** z
+0 . 3 * y * y / ( log ( y ) ) ** z )
+0 . 3 * y * y / ( log ( log ( y ) ) )
+0 . 3 * y * y / ( log ( log ( y ) ) ) )
+0 . 3 * y * y / ( sqrt ( log ( y ) ) ) )
+0 . 3 * y * y / ( sqrt ( sqrt ( y ) ) ) ) )
+0 . 3 * y * y / ( log ( log ( y ) ) ) ) **
+
+========================================
+ACTUAL: ( 2.718 ** ( log ( x ) + 1 ) ) ** t | INPUT: ( 2.718 **
+torch.Size([10, 4])
+----- PREDICTIONS -----
+( 2.718 ** t * x ) ** t
+( 2.718 ** t * x ) ** x )
+( 2.718 ** t * x ) ** log ( x )
+( 2.718 ** t * x ) ** log ( t )
+( 2.718 ** t * x ) ** x ) ** x
+( 2.718 ** t * x ) ** ( x ) ** t
+( 2.718 ** t * x ) ** ( x ) ** t )
+( 2.718 ** t * x ) ** ( sqrt ( x ) )
+( 2.718 ** t * x ) ** ( x ) ** 2 )
+( 2.718 ** t * x ) ** ( t ) ** x )
+
+========================================
+ACTUAL: sqrt ( z ) | INPUT: sqrt ( z
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sqrt ( z ) * sqrt ( z
+sqrt ( z ) * sqrt ( z )
+sqrt ( z ) * sqrt ( z )
+sqrt ( z ) * sqrt ( z )
+sqrt ( z ) * sqrt ( z )
+sqrt ( z ) * sqrt ( z )
+sqrt ( z ) * sqrt ( 2 )
+sqrt ( z ) * sqrt ( 0 . 1 )
+sqrt ( z ) * sqrt ( sin ( z ) )
+sqrt ( z ) * sqrt ( sin ( z ) )
+
+========================================
+ACTUAL: - exp ( y ) / 3 | INPUT: - exp (
+torch.Size([10, 4])
+----- PREDICTIONS -----
+- exp ( y ) - 0 . 1
+- exp ( y ) / ( y )
+- exp ( y ) - tan ( y )
+- exp ( y ) - tan ( y )
+- exp ( y ) - sin ( y )
+- exp ( y ) * tan ( y )
+- exp ( y ) - sin ( y )
+- exp ( y ) - sin ( y ) - 1
+- exp ( y ) * sin ( y - 1 )
+- exp ( y ) * tan ( y ) - 1
+
+========================================
+ACTUAL: - 8 * t * y - 8 * cos ( x ) | INPUT: - 8 *
+torch.Size([10, 4])
+----- PREDICTIONS -----
+- 8 * t * y + x + y - 2.718
+- 8 * t * y * x + y - 5
+- 8 * t + x - y + y - 2.718
+- 8 * t * y * x + y - x - y - 5
+- 8 * t * y * x + y - x - y - 9
+- 8 * t * y * x + y - x - y - 4
+- 8 * t * y * x + y - x - y - 3.142
+- 8 * t * y * x + y - x - y - 7
+- 8 * t * y * x + y - x - y - 2
+- 8 * t * y + x + y - exp ( x ) - 2
+
+========================================
+ACTUAL: sin ( t ) + 2 . 8 5 1 | INPUT: sin ( t
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sin ( t + exp ( t ) + 2.718 )
+sin ( t + exp ( t ) + 2 )
+sin ( t + exp ( t ) ) + 2.718
+sin ( t + exp ( t ) + 3.142 )
+sin ( t + exp ( t ) + 5 )
+sin ( t + exp ( t ) + 2.718 )
+sin ( t + exp ( t ) + 4 ) + 3.142
+sin ( t + exp ( t ) + 4 ) + 2.718
+sin ( t + exp ( t ) + 4 ) + 2
+sin ( t + exp ( t ) + 2 ) + 3.142
+
+========================================
+ACTUAL: cos ( x ) | INPUT: cos ( x
+torch.Size([10, 4])
+----- PREDICTIONS -----
+cos ( x ) ** 0 . 1
+cos ( x ) ** cos ( x )
+cos ( x ) ** cos ( x )
+cos ( x ) ** ( x + 1 )
+cos ( x ) ** ( cos ( x ) )
+cos ( x ) ** ( cos ( x ) )
+cos ( x ) ** ( cos ( x ) + 1 )
+cos ( x ) ** ( cos ( x ) + 2.718 )
+cos ( x ) ** ( cos ( x ) + 2 )
+cos ( x ) ** ( cos ( x ) ) ** 2
+
+========================================
+ACTUAL: ( z + 9 ) ** ( exp ( x ) - 2.718 ) | INPUT: ( z +
+torch.Size([10, 4])
+----- PREDICTIONS -----
+( z + x * exp ( x ) )
+( z + x * exp ( x ) ** 2 )
+( z + x * cos ( x ) ) ** 3.142
+( z + x * exp ( x ) ) ** 2
+( z + x * cos ( x ) ) ** 2.718
+( z + x * cos ( x ) ) ** 5
+( z + x * exp ( x ) ) ** 3.142
+( z + x * exp ( x ) ) ** 2.718
+( z + x * exp ( x ) ** ( x ) )
+( z + x * cos ( x ) ) ** ( x )
+
+========================================
+ACTUAL: sqrt ( z ) * log ( cos ( t ) / z ) | INPUT: sqrt ( z
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sqrt ( z ) * cos ( t )
+sqrt ( z ) * cos ( t )
+sqrt ( z ) - sin ( t )
+sqrt ( z ) - cos ( t )
+sqrt ( z ) * sin ( t )
+sqrt ( z ) * sin ( t )
+sqrt ( z ) * cos ( t ) - 1
+sqrt ( z ) * cos ( t ) - z )
+sqrt ( z ) * cos ( t ) - 0 . 1
+sqrt ( z ) * cos ( t ) - 0 . 1
+
+========================================
+ACTUAL: 3.142 ** ( 3.142 - z ) * tan ( t ) | INPUT: 3.142 ** (
+torch.Size([10, 4])
+----- PREDICTIONS -----
+3.142 ** ( t * ( t ) + z + 2.718 ) )
+3.142 ** ( t * ( t ) + exp ( z ) )
+3.142 ** ( t * ( t ) + exp ( z ) ) )
+3.142 ** ( t * ( t ) + exp ( z ) ) + z )
+3.142 ** ( t * ( t ) + z + exp ( t ) ) )
+3.142 ** ( t * ( t ) + z + exp ( z ) ) )
+3.142 ** ( t * ( t ) + exp ( z ) ) + 9 )
+3.142 ** ( t * ( t ) + z + 8 ) + exp ( z ) )
+3.142 ** ( t * ( t ) + exp ( z ) ) + exp ( z )
+3.142 ** ( t * ( t ) + exp ( z ) ) + exp ( t )
+
+========================================
+ACTUAL: 2 . 0 4 ** sin ( y ) | INPUT: 2 . 0
+torch.Size([10, 4])
+----- PREDICTIONS -----
+2 . 0 . 3 ** exp ( y )
+2 . 0 . 3 ** exp ( y )
+2 . 0 . 1 * exp ( y )
+2 . 0 . 1 8 * exp ( y )
+2 . 0 . 3 ** exp ( tan ( y ) )
+2 . 0 . 3 ** exp ( tan ( y ) )
+2 . 0 . 3 ** exp ( tan ( y ) ) )
+2 . 0 . 3 ** exp ( y ) + tan ( y )
+2 . 0 . 3 ** exp ( y ) + sin ( y )
+2 . 0 . 1 8 * exp ( y ) + tan ( y )
+
+========================================
+ACTUAL: 1 8 . 0 1 2 * exp ( y ) | INPUT: 1 8 .
+torch.Size([10, 4])
+----- PREDICTIONS -----
+1 8 . 0 * exp ( tan ( y ) ) + 4
+1 8 . 0 * exp ( cos ( y ) + 8 )
+1 8 . 0 * exp ( y ) + 8 * sin ( y )
+1 8 . 0 * exp ( y ) + 8 * cos ( y )
+1 8 . 0 * exp ( sin ( y ) + tan ( y ) )
+1 8 . 0 * exp ( sin ( y ) + tan ( y ) ) ) +
+1 8 . 0 * exp ( cos ( y ) + 8 ) + tan ( y )
+1 8 . 0 * exp ( cos ( y ) + 9 ) + tan ( y )
+1 8 . 0 * exp ( y ) + 8 * sin ( cos ( y ) )
+1 8 . 0 * exp ( cos ( y ) + 8 ) + cos ( y )
+
+========================================
+ACTUAL: sin ( ( t ** 2 ) ** sin ( t ) ) | INPUT: sin ( (
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sin ( ( t + exp ( t ) ) )
+sin ( ( t - t - sin ( t ) ) )
+sin ( ( t + exp ( t ) ) ** 2 )
+sin ( ( t + exp ( t ) ) ) ** 2 )
+sin ( ( t + exp ( t ) ) ) ** 4 )
+sin ( ( t - t - sin ( t ) ) ) )
+sin ( ( t + exp ( t ) ) ) ** 3 )
+sin ( ( t + exp ( t ) ) ) ** 8 )
+sin ( ( t + tan ( t ) ) ) ** 2 )
+sin ( ( t + exp ( t ) ) ) ** 7 )
+
+========================================
+ACTUAL: 2 ** ( - 3 * y + 3 * log ( x ) ) | INPUT: 2 ** (
+torch.Size([10, 4])
+----- PREDICTIONS -----
+2 ** ( x ** ( x ) ** y ) ** y )
+2 ** ( x ** ( x ) ** y ) ** y )
+2 ** ( x ** x ) ** ( x ) ** y )
+2 ** ( x ** ( x ) ) ** y ) ** y
+2 ** ( x ** ( x ) ** y ) ** 2 )
+2 ** ( x ** x ) ** ( x ) ** y ) ** y
+2 ** ( x ** ( x ) ** y ) ** 2 ) ** y
+2 ** ( x ** ( x ) ** y ) ** x ) ** y
+2 ** ( x ** ( x ) ** y ) ** y ) ** 2
+2 ** ( x ** ( x ) ** y ) ** y ) ** y
+
+========================================
+ACTUAL: tan ( exp ( x ) - 1 5 3 . 9 5 8 ) | INPUT: tan ( exp
+torch.Size([10, 4])
+----- PREDICTIONS -----
+tan ( exp ( x ) / x )
+tan ( exp ( x ) / x )
+tan ( exp ( x ) / ( x )
+tan ( exp ( x ) / tan ( x )
+tan ( exp ( x ) / tan ( x ) )
+tan ( exp ( x ) / sin ( x ) )
+tan ( exp ( x ) / tan ( x ) )
+tan ( exp ( x ) / tan ( x ) )
+tan ( exp ( x ) / tan ( x ) )
+tan ( exp ( x ) / cos ( x ) )
+
+========================================
+ACTUAL: tan ( sqrt ( x ) ) | INPUT: tan ( sqrt
+torch.Size([10, 4])
+----- PREDICTIONS -----
+tan ( sqrt ( x ) )
+tan ( sqrt ( x ) )
+tan ( sqrt ( x ) ) ** x
+tan ( sqrt ( x ) ) ** x
+tan ( sqrt ( x ) ) ** 2
+tan ( sqrt ( x ) ) ** x
+tan ( sqrt ( x ) + 1 )
+tan ( sqrt ( x ) ) ** 2.718
+tan ( sqrt ( x ) ) ** 2
+tan ( sqrt ( x ) ) ** 2
+
+========================================
+ACTUAL: 1 . 6 4 9 * sqrt ( 0 . 3 6 8 * x * sin ( t ) | INPUT: 1 . 6
+torch.Size([10, 4])
+----- PREDICTIONS -----
+1 . 6 ** ( t * x + cos ( t ) )
+1 . 6 ** ( t * x + cos ( x ) )
+1 . 6 ** ( t * x + exp ( t ) )
+1 . 6 ** ( t * x + cos ( t ) ) + 3.142
+1 . 6 ** ( t * x + cos ( t ) ** x )
+1 . 6 ** ( t * x + sin ( t ) ) ** x
+1 . 6 ** ( t * x + cos ( t ) ) + 2.718 )
+1 . 6 ** ( t * x + sin ( t ) ) ** x )
+1 . 6 ** ( t * x + cos ( t ) ) + 1 )
+1 . 6 ** ( t * x + cos ( t ) ** x ) )
+
+========================================
+ACTUAL: ( z - 7 . 3 8 8 / t ) ** cos ( y ) | INPUT: ( z -
+torch.Size([10, 4])
+----- PREDICTIONS -----
+( z - exp ( y - cos ( y ) ) + 9 ) + 8
+( z - exp ( y - cos ( y ) ) + 9 ) + 4
+( z - exp ( y - cos ( y ) ) + 9 ) + 5
+( z - exp ( y - cos ( y ) ) + 8 * cos ( z )
+( z - exp ( y ) * z + 8 * exp ( y + 9 ) +
+( z - exp ( y ) * z + 8 * exp ( y ) + 2 *
+( z - exp ( y ) * z + 8 * exp ( y ) + 9 *
+( z - exp ( y ) * z + 8 * exp ( y ) + 9 +
+( z - exp ( y ) * z + 8 * exp ( y + 9 ) **
+( z - exp ( y ) * z + 8 * exp ( y ) + 2 +
+
+========================================
+ACTUAL: cos ( t ) / x | INPUT: cos ( t
+torch.Size([10, 4])
+----- PREDICTIONS -----
+cos ( t ) / x
+cos ( t ) / x
+cos ( t ) / x
+cos ( t ) / x
+cos ( t ) / x
+cos ( t ) / x / x
+cos ( t ) / ( x )
+cos ( t ) / x / ( t )
+cos ( t ) / ( t + x )
+cos ( t ) / ( t / x )
+
+========================================
+ACTUAL: 1 . 0 * t - 2.718 + 5 . 5 0 5 / tan ( x ) | INPUT: 1 . 0
+torch.Size([10, 4])
+----- PREDICTIONS -----
+1 . 0 * ( t + x ) / cos ( t )
+1 . 0 * ( t + x ) / sin ( t )
+1 . 0 * ( t + x ) / ( t + 3.142 )
+1 . 0 * ( t + x ) / cos ( t ) + 8
+1 . 0 * ( t + x ) / cos ( t ) + 2.718
+1 . 0 * ( t + x ) / cos ( t ) + 5
+1 . 0 * ( t + x ) / sin ( t ) + 8
+1 . 0 * ( t + x ) / cos ( t ) + 6
+1 . 0 * ( t + x ) / cos ( t ) + 3
+1 . 0 * ( t + x ) / cos ( t ) + 4
+
+========================================
+ACTUAL: ( sqrt ( tan ( y ) ) - 3 ) / x | INPUT: ( sqrt (
+torch.Size([10, 4])
+----- PREDICTIONS -----
+( sqrt ( x ) - 2 * y ) + 9
+( sqrt ( x ) - 2 * y ) + 6
+( sqrt ( x ) - 2 * sqrt ( y ) )
+( sqrt ( x ) - 2 * y ) + 5 )
+( sqrt ( x ) - 5 * y ) + 9 )
+( sqrt ( x ) - 2 * sqrt ( y ) ) + 3.142
+( sqrt ( x ) - 2 * sqrt ( y ) ) + 2.718
+( sqrt ( x ) - 2 * sqrt ( y ) ) + 8
+( sqrt ( x ) - 2 * sqrt ( y ) ) + 9 )
+( sqrt ( x ) - 2 * sqrt ( y ) ) + 2 )
+
+========================================
+ACTUAL: 1 . 2 8 2 + y / sqrt ( t ) | INPUT: 1 . 2
+torch.Size([10, 4])
+----- PREDICTIONS -----
+1 . 2 * log ( t ) ** y + 1
+1 . 2 * sqrt ( t ) + y + y
+1 . 2 * sqrt ( sqrt ( t ) ) + y
+1 . 2 * sqrt ( t ) + y + y )
+1 . 2 * sqrt ( sqrt ( t ) ) + y )
+1 . 2 * sqrt ( t ) + y + sin ( t )
+1 . 2 * sqrt ( sqrt ( t ) ) + y + y
+1 . 2 * sqrt ( sqrt ( t ) ) + y ) + y
+1 . 2 * sqrt ( sqrt ( t ) + tan ( t ) ) )
+1 . 2 * log ( t ) ** y + 1 / sqrt ( t )
+
+========================================
+ACTUAL: log ( sin ( y ) ) | INPUT: log ( sin
+torch.Size([10, 4])
+----- PREDICTIONS -----
+log ( sin ( y ) )
+log ( sin ( y ) )
+log ( sin ( y ) )
+log ( sin ( y ) )
+log ( sin ( y ) + 1 )
+log ( sin ( y ) + y )
+log ( sin ( y ) + 1 )
+log ( sin ( y ) + y )
+log ( sin ( y ) ) - 0 . 1
+log ( sin ( y ) ) + log ( y )
+
+========================================
+ACTUAL: cos ( y ) / x | INPUT: cos ( y
+torch.Size([10, 4])
+----- PREDICTIONS -----
+cos ( y ) / x
+cos ( y ) / x
+cos ( y ) / x
+cos ( y ) / x / x
+cos ( y ) / x / x
+cos ( y ) / x / y
+cos ( y ) / x / x
+cos ( y ) / x / y
+cos ( y ) / ( x ) / x
+cos ( y ) / ( x ) / y
+
+========================================
+ACTUAL: - x + tan ( t ) | INPUT: - x +
+torch.Size([10, 4])
+----- PREDICTIONS -----
+- x + tan ( t )
+- x + tan ( t )
+- x + t - tan ( x )
+- x + tan ( t - x )
+- x + t - tan ( x )
+- x + tan ( t ) - x
+- x + t - tan ( t )
+- x + tan ( t + tan ( t ) )
+- x + tan ( t ) - tan ( t )
+- x + tan ( t ) - sin ( x )
+
+========================================
+ACTUAL: - sin ( t ) / 2 | INPUT: - sin (
+torch.Size([10, 4])
+----- PREDICTIONS -----
+- sin ( t + exp ( t ) )
+- sin ( t ) / cos ( t )
+- sin ( t + exp ( t ) + 1 )
+- sin ( t ) / ( cos ( t ) )
+- sin ( t ) / ( exp ( t ) )
+- sin ( t ) / ( cos ( t ) )
+- sin ( t + exp ( t ) + 2.718 )
+- sin ( t + exp ( t ) ) - 1 )
+- sin ( t + exp ( t ) + 2.718 ) )
+- sin ( t + exp ( t ) ) - 0 .
+
+========================================
+ACTUAL: sqrt ( y * ( log ( x ) + 3 . 6 5 9 ) ) | INPUT: sqrt ( y
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sqrt ( y ) ** x
+sqrt ( y ) ** x
+sqrt ( y ) * x ** y
+sqrt ( y ) * x ** x
+sqrt ( y ) * x ** y
+sqrt ( y ) ** ( x ) ** x
+sqrt ( y ) ** ( x ) ** y
+sqrt ( y ) ** ( x ) ** 2.718
+sqrt ( y ) ** ( x ) ** 3.142
+sqrt ( y ) * x ** ( sqrt ( x ) )
+
+========================================
+ACTUAL: sqrt ( tan ( x ) ) | INPUT: sqrt ( tan
+torch.Size([10, 4])
+----- PREDICTIONS -----
+sqrt ( tan ( x ) )
+sqrt ( tan ( x ) )
+sqrt ( tan ( x ) )
+sqrt ( tan ( x ) ** x )
+sqrt ( tan ( x ) ** x )
+sqrt ( tan ( x ) ) ** x
+sqrt ( tan ( x ) ) ** x
+sqrt ( tan ( x ) ) ** x
+sqrt ( tan ( x ) ) ** x
+sqrt ( tan ( x ) ) ** 2

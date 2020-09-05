@@ -154,11 +154,14 @@ def beam_search(
     if input_str is None:
         input_ids = torch.ones((batch_size * beam_size, 1)).long() * bos_id
     else:
-        input_ids = torch.from_numpy(np.asarray([
-            [bos_id,] + [VOCAB[x] for x in prepare_expr_string(input_str)]
-        ])).long()[:max_length]
-    
-    cur_len = input_ids.size(0)
+        seq = [
+            [bos_id, ] + [VOCAB[x] for x in prepare_expr_string(input_str)]
+        ][:max_length]
+        seq = [seq,]*(batch_size * beam_size)
+        input_ids = torch.from_numpy(np.asarray(seq)).long().squeeze(1)
+
+    print(input_ids.size())
+    cur_len = input_ids.size(1)
     attention_mask = torch.ones((batch_size * beam_size, cur_len)).long()
     enc_out = model.enc_out(**obs)  # get the encoder output for cached
 

@@ -256,10 +256,11 @@ class TransformerEncoderDecoderModel(nn.Module):
         o = self.lino(o) + self.embd(torch.ones(embd_shape).long() * 4) # [B, N, n_embd]
 
         # mask encoder input based on wether the variables are present or not
-        x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
-        y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
-        z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
-        t = x * mask_t.view(-1, 1, 1) # [B, N, n_embd]
+        if self.use_var_masking:
+            x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
+            y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
+            z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
+            t = x * mask_t.view(-1, 1, 1) # [B, N, n_embd]
         src = x + y + z + t + o # [B, N, n_embd]
 
         # decoder embedding
