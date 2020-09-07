@@ -13,7 +13,7 @@ I created datasets of various sizes, following describes them
 | name   | use_samples | Nmin | Nmax | p1min | p1max | p2min | p2max | lmin | lmask | maxlen | num_samples |
 |--------|-------------|------|------|-------|-------|-------|-------|------|-------|--------|-------------|
 | small  | 12999       | 5    | 1    | 1     | 3     | 1     |  3    | 1    | 3     | 20     | 40          |
-| medium | NA          | 1    | 6    | 1     | 6     | 1     | 6     | 1    | 6     | 40     | 100         |
+| medium | 14209       | 1    | 6    | 1     | 6     | 1     | 6     | 1    | 6     | 40     | 100         |
 
 To rebuild, pass values to `data_config` object in `prepare_data.py`.
 
@@ -55,6 +55,7 @@ Couple of observations from `plato_small` test:
 5. All this points to a simple thing that it needs to be trained on more data
 6. Larger batch size does not have a big effect either 128 works better than 512
 7. Model `plato4` had the best configuration, training time etc. for the given data
+8. Despite bad results model has learned however which variables are occuring in the data, thus suggesting that has understood something.
 
 
 ### Machine Intelligence
@@ -77,7 +78,8 @@ torch.Size([10, 4])
 - exp ( y ) / ( tan ( y ) + 5 ) --> (L1: 2.14199441108556, L2: 2.034006150014397)
 ```
 
-Notice that the second last prediction (`- exp ( y ) / ( tan ( y ) + 5 )`) is actually the closest match to the actual data. When I plot the graph I got the image below:
-<img src="assets/plato_match.png">
+Notice that the second last prediction (`- exp ( y ) / ( tan ( y ) + 8 )`) is actually the closest match to the actual data. When I plot the graph I got the image below:
 
-In the first plot see that the two graphs are pretty same, red arrow points to the predicttion and green to the actual curve. Thus though it is learning in values smaller than 1 have weird behaviour, we need to include bigger numbers as well.
+<img src="assets/plato_match.png" height="400px">
+
+(A) represents the zoomed in version and (B) is the zoomed out versions. In the first plot see that the two graphs are pretty same, red arrow points to the predicttion and green to the actual curve. Thus though it is learning in values smaller than 1 have weird behaviour, we need to include bigger numbers as well.
