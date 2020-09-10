@@ -52,7 +52,7 @@ args.add_argument("--use_emb_matrix_head", default=True, type=bool,
                   help="if true uses the transpose of the embedding matrix")
 
 # ---- trainer ---- #
-args.add_argument("--epochs", default=20, type=int,
+args.add_argument("--epochs", default=3, type=int,
                   help="number of epochs to train the model")
 args.add_argument("--batch_size", default=128, type=int,
                   help="batch size for training")
@@ -88,7 +88,8 @@ config = Config(
     decoder_maxlen=args.decoder_maxlen,
     use_var_masking=args.use_var_masking,
     openai_block=args.openai_block,
-    output_attentions=args.output_attentions
+    output_attentions=args.output_attentions,
+    use_emb_matrix_head=args.use_emb_matrix_head
 )
 
 logging.info(trainer_conf)

@@ -160,7 +160,6 @@ def beam_search(
         seq = [seq,]*(batch_size * beam_size)
         input_ids = torch.from_numpy(np.asarray(seq)).long().squeeze(1)
 
-    print(input_ids.size())
     cur_len = input_ids.size(1)
     attention_mask = torch.ones((batch_size * beam_size, cur_len)).long()
     enc_out = model.enc_out(**obs)  # get the encoder output for cached

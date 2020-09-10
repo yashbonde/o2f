@@ -4,28 +4,41 @@ This file has the details on Experiments. All the tensorboard summaries are stor
 ```
 tensorboard --logdir=models/
 ```
-and you will get all the obeservations.
+and you will get all the observations.
+
+## Experiment
+
+It is possible to train an encoder-decoder transformer based neural network to predict symbolic mathematical expression by directly showing the observed data. One sample is given below:
+```
+---- OBSERVATION ----
+( 0.252,  -1.17,  -1.32  )  --> (6.86)
+( -1.32,  -0.943, -1.94  )  --> (6.84)
+( 1.74,   -0.823, -0.337 )  --> (4.87)
+( -0.371, -1.13,  1.72   )  --> (3.79)
+( -1.46,  -1.51,  -0.433 )  --> (4.99)
+( -0.686, -0.494, -2.0   )  --> (7.59)
+( 1.72,   1.54,   -0.366 )  --> (5.78)
+( 0.878,  -1.87,  -1.45  )  --> (6.39)
+( -0.594, -0.208, 1.05   )  --> (4.7 )
+( -1.35,  -0.462, 1.26   )  --> (3.79)
+*90 more samples
+---- EXPRESSION ----
+- t + 0 . 3 6 8 * y + cos ( x ) + 5
+```
 
 ## Data
 
 I created datasets of various sizes, following describes them
 
-| name   | use_samples | Nmin | Nmax | p1min | p1max | p2min | p2max | lmin | lmask | maxlen | num_samples |
-|--------|-------------|------|------|-------|-------|-------|-------|------|-------|--------|-------------|
-| small   | 12999       | 5    | 1    | 1     | 3     | 1     |  3    | 1    | 3     | 20     | 40          |
-| medium  | 14209       | 1    | 6    | 1     | 6     | 1     | 6     | 1    | 6     | 40     | 100         |
-|medium46k| 46101       | 1    | 6    | 1     | 6     | 1     | 6     | 1    | 6     | 40     | 100         |
+| name    | use_samples | Nmin | Nmax | p1min | p1max | p2min | p2max | lmin | lmask | maxlen | num_samples | obs_range | inp_range |
+|---------|-------------|------|------|-------|-------|-------|-------|------|-------|--------|-------------|-----------|-----------|
+| small   | 12999       | 5    | 1    | 1     | 3     | 1     |  3    | 1    | 3     | 20     | 40          | (-50,50)  | (-1, 1)   |
+| medium  | 14209       | 1    | 6    | 1     | 6     | 1     | 6     | 1    | 6     | 40     | 100         | (-10,10)  | (-1, 1)   |
+|medium46k| 46101       | 1    | 6    | 1     | 6     | 1     | 6     | 1    | 6     | 40     | 100         | (-10,10)  | (-2, 2)   |
 
 To rebuild, pass values to `data_config` object in `prepare_data.py`.
 
-**NOTE:** when making the final dataset, I use the following logic:
-```
-input_variables: in range (-1, 1)
-all samples where !(10 > "o" > -10) --> thrown away
-```
-
-I believe this might cause issues if the values are always less then unity. Will create another dataset where `input_variables` will be in range (-3, 3).
-
+To generate observations from the expressions, random values between `inp_range` are fed and if the observation values are not in `obs_range`, we discard them.
 
 ## Plato
 
@@ -33,18 +46,19 @@ Small networks with 13000 samples dataset, `test_train_split = -0.9`, `use_vars_
 
 | model_name | dataset | n_samples | epochs | batch_size | warmup_steps | lr_mult | encoder_maxlen | decoder_maxlen | use_var_masking | n_embd | n_layer | n_head | openai_block | use_emb_weights |
 |------------|---------|-----------|--------|------------|--------------|---------|----------------|----------------|-----------------|--------|---------|--------|--------|--------|
-| plato       | small   | 12999     | 20     | 128        | 300          | 1       | 40             | 20             | True           | 128    | 6       | 8      | false | false |
-| plato2      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | True           | 128    | 6       | 8      | false | false |
-| plato3      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | True           | 128    | 6       | 8      | false | false |
-| ✅ plato4   | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 8      | false | false |
-| plato5      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | false | false |
-| plato6      | small   | 12999     | 20     | 512        | 23 (1 batch) | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | false | false |
-| plato7      | small   | 12999     | 20     | 512        | 46 (2 batch) | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | false | false |
-| plato8      | small   | 12999     | 20     | 64         | 100          | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | false | false |
-| plato9      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 4      | false | false |
-| plato_med_1 | medium  | 14209     | 20     | 128        | 60           | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | false | false |
-| plato46k    |medium46k| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | false | false |
-| plato46k    |medium46k2| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | true | true |
+| plato       | small   | 12999     | 20     | 128        | 300          | 1       | 40             | 20             | True           | 128    | 6       | 8      | False | False |
+| plato2      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | True           | 128    | 6       | 8      | False | False |
+| plato3      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | True           | 128    | 6       | 8      | False | False |
+| ✅ plato4   | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 8      | False | False |
+| plato5      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | False | False |
+| plato6      | small   | 12999     | 20     | 512        | 23 (1 batch) | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | False | False |
+| plato7      | small   | 12999     | 20     | 512        | 46 (2 batch) | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | False | False |
+| plato8      | small   | 12999     | 20     | 64         | 100          | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | False | False |
+| plato9      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 4      | False | False |
+| plato_med_1 | medium  | 14209     | 20     | 128        | 60           | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | False | False |
+| plato46k    |medium46k| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | False | False |
+| plato46k2   |medium46k2| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False           | 128    | 6       | 8      | True  | False |
+| plato46k3   |medium46k2| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False           | 128    | 6       | 8      | True  | True  |
 
 Couple of observations from `plato_small` test:
 
@@ -52,7 +66,18 @@ Couple of observations from `plato_small` test:
 2. Model learns better if it is given all the input rather than masking the embedding of variable that is not in the equation
 3. When in use model performs significantly better when given the first few tokens as input (this is cherry picked)
 
-<img src="assets/plato_use.png">
+```
+========================================
+ACTUAL: t * cos ( y ) | INPUT: t * 
+----- PREDICTIONS -----
+t * cos ( y )
+t * cos ( y )
+t * cos ( y ) * 0 . 8 9 2
+t * cos ( y ) ** 2
+t * ( y + sin ( y ) )
+t * ( y + cos ( y ) + sin ( y ) )
+t * ( y + cos ( y ) )
+```
 
 4. Model has hard time learning about numbers eg. `1.234 + sin(x)`
 5. All this points to a simple thing that it needs to be trained on more data
@@ -120,4 +145,8 @@ Notice that the second last prediction (`- exp ( y ) / ( tan ( y ) + 8 )`) is ac
 
 <img src="assets/plato_match.png" height="400px">
 
-(A) represents the zoomed in version and (B) is the zoomed out versions. In the first plot see that the two graphs are pretty same, red arrow points to the predicttion and green to the actual curve. Thus though it is learning in values smaller than 1 have weird behaviour, we need to include bigger numbers as well.
+(A) represents the zoomed in version and (B) is the zoomed out versions. In (A) see that the two graphs are pretty same, red arrow points to the prediction and green to the actual curve. Whereas when zooming out (B), we see that the curves are actually very different. Thus though it is learning in values smaller than 1 have weird behaviour, we need to include bigger numbers as well.
+
+## Remarks
+
+By looking at the observations above it is hard to believe that the model is actually learning something from the data.
