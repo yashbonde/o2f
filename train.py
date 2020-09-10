@@ -26,7 +26,7 @@ args.add_argument("--name", default=None, type=str,
                   help="folder for this model")
 args.add_argument("--data_json", default=None, type=str,
                   help="path to data json")
-args.add_argument("--train_split", default=0.9, type=float,
+args.add_argument("--train_split", default=0.913, type=float,
                   help="train size split")
 
 # ---- config ---- #
@@ -44,6 +44,12 @@ args.add_argument("--use_var_masking", default=False, type=bool,
                   help="apply mask for variables")
 args.add_argument("--pdrop", default=0.1, type=float,
                   help="dropout probability")
+args.add_argument("--openai_block", default=True, type=bool,
+                  help="if true perform layer norm before input")
+args.add_argument("--output_attentions", default=False, type=bool,
+                  help="if true returns the attention matrices from each layer")
+args.add_argument("--use_emb_matrix_head", default=True, type=bool,
+                  help="if true uses the transpose of the embedding matrix")
 
 # ---- trainer ---- #
 args.add_argument("--epochs", default=20, type=int,
@@ -58,7 +64,7 @@ args.add_argument("--beta2", default=0.95, type=float,
                   help="beta_2 parameter for AdamW")
 args.add_argument("--grad_norm_clip", default=1.0,
                   type=float, help="gradient clipping value")
-args.add_argument("--warmup_steps", default=60,
+args.add_argument("--warmup_steps", default=300,
                   type=int, help="warmup steps")
 args = args.parse_args()
 
@@ -80,7 +86,9 @@ config = Config(
     pdrop=args.pdrop,
     encoder_maxlen = args.encoder_maxlen,
     decoder_maxlen=args.decoder_maxlen,
-    use_var_masking=args.use_var_masking
+    use_var_masking=args.use_var_masking,
+    openai_block=args.openai_block,
+    output_attentions=args.output_attentions
 )
 
 logging.info(trainer_conf)
@@ -141,12 +149,6 @@ class Ds(Dataset):
 # create models and dataloader
 model = TransformerEncoderDecoderModel(config)
 optimizer = None
-# optimizer = torch.optim.AdamW(
-#     model.parameters(),
-#     lr=trainer_conf.learning_rate,
-#     betas=trainer_conf.betas
-# )
-# DataLoader(, batch_size=trainer_conf.batch_size, shuffle=True)
 ds_train = Ds("train")
 ds_test = Ds("test")
 

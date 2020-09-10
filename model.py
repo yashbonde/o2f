@@ -102,10 +102,18 @@ class EncoderBlock(nn.Module):
             nn.Linear(4 * config.n_embd, config.n_embd),
             nn.Dropout(config.pdrop),
         )
+        self.openai_block = config.openai_block
 
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        # in OpenAI implementation they perform normalisation before attention and MLP
+        if self.openai_block: x = self.ln1(x)
+        x = x + self.attn(x)
+        if not self.openai_block: x = self.ln1(x)
+        
+        # MLP
+        if self.openai_block: x = self.ln2(x)
+        x = x + self.mlp(x)
+        if not self.openai_block: x = self.ln2(x)
         return x
 
 
@@ -126,11 +134,27 @@ class DecoderBlock(nn.Module):
             nn.Dropout(config.pdrop),
         )
 
+        self.openai_block = config.openai_block
+
     def forward(self, d):
+        # in OpenAI implementation they perform normalisation before attention and MLP
         x, mem, pad_mask = d
-        x = x + self.attn(self.ln1(x), forward_mask = True, pad_mask = pad_mask)
-        x = x + self.attn(self.ln2(x), mem)
-        x = x + self.mlp(self.ln3(x))
+
+        # self-attention
+        if self.openai_block: x = self.ln1(x)
+        x = x + self.attn(x, forward_mask=True, pad_mask=pad_mask)
+        if not self.openai_block: x = self.ln1(x)
+
+        # memory-attention
+        if self.openai_block: x = self.ln2(x)
+        x = x + self.attn(x, mem)
+        if not self.openai_block: x = self.ln2(x)
+
+        
+        # MLP
+        if self.openai_block: x = self.ln3(x)
+        x = x + self.mlp(x)
+        if not self.openai_block: x = self.ln3(x)
         return (x, mem, pad_mask)
 
 
@@ -179,6 +203,9 @@ class TransformerEncoderDecoderModel(nn.Module):
         self.use_var_masking = config.use_var_masking
         self.num_params = sum(p.numel() for p in self.parameters())
         logging.info(f"number of parameters: {self.num_params}")
+
+        self.openai_block = config.openai_block
+        self.use_emb_matrix_head = config.use_emb_matrix_head
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -239,62 +266,23 @@ class TransformerEncoderDecoderModel(nn.Module):
             input_ids, attention_mask,
             targets=None, verbose = False
         ):
-        B, Ttgt = input_ids.size()
-
         if verbose:
             print("---- FORWARD ----")
 
-        if Ttgt > self.decoder_maxlen:
-            raise ValueError(f"Current input is longer than maximum allowed length, got: {Ttgt}")
+        # embed the input and pass through the encoder layers
+        enc_out = self.enc_out(
+            x, y, z, t, o,
+            mask_x, mask_y, mask_z, mask_t,
+            verbose
+        )
 
-        # encoder embedding
-        embd_shape = x.size()[:2]
-        x = self.linx(x) + self.embd(torch.ones(embd_shape).long() * 0) # [B, N, n_embd]
-        y = self.liny(y) + self.embd(torch.ones(embd_shape).long() * 1) # [B, N, n_embd]
-        z = self.linz(z) + self.embd(torch.ones(embd_shape).long() * 2) # [B, N, n_embd]
-        t = self.lint(t) + self.embd(torch.ones(embd_shape).long() * 3) # [B, N, n_embd]
-        o = self.lino(o) + self.embd(torch.ones(embd_shape).long() * 4) # [B, N, n_embd]
-
-        # mask encoder input based on wether the variables are present or not
-        if self.use_var_masking:
-            x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
-            y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
-            z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
-            t = x * mask_t.view(-1, 1, 1) # [B, N, n_embd]
-        src = x + y + z + t + o # [B, N, n_embd]
-
-        # decoder embedding
-        token_embeddings = self.wte(input_ids) # each index maps to a (learnable) vector
-        position_embeddings = self.pos_emb[:, :Ttgt, :] # each position maps to a (learnable) vector
-        tgt = token_embeddings + position_embeddings
-
-        B, trgsz = attention_mask.size()
-        lens = torch.argmax(attention_mask, dim=1)  # [B,]
-        pad_mask = torch.ones((B, trgsz, trgsz), requires_grad=False)
-        for b, l in zip(range(B), lens):
-            pad_mask[b, :l, :l] = 0
-        pad_mask[pad_mask == 1.] = -1e10
-
-        if verbose:
-            print(f"Source: {src.size()}, Target: {tgt.size()}")
-            print("pad:", pad_mask.size(), "att:", attention_mask.size())
-
-        # run the model and get logits --> we need to transpose because of the 
-        # dec_out = self.trans_model(
-        #     src = src.transpose(0, 1),
-        #     tgt = tgt.transpose(0, 1),
-        #     tgt_key_padding_mask=attention_mask
-        # ).transpose(0, 1)
-
-        enc_out = self.encoder(src)
-        dec_out = self.decoder((tgt, enc_out, pad_mask))[0] # returns a tuple
-
-        lm_logits = self.lm_head(self.ln_f(dec_out))
-
+        # take the embeddings from encoder and input to decoder
+        # and get the output logits
+        lm_logits = self.dec_out(
+            enc_out, input_ids, attention_mask, verbose
+        )
         if verbose:
             print(f"Logits: {lm_logits.size()}")
-
-        del pad_mask # delete and save memory people
 
         # if the targets are given then
         loss = None
@@ -338,6 +326,10 @@ class TransformerEncoderDecoderModel(nn.Module):
 
     def dec_out(self, enc_out, input_ids, attention_mask, verbose = False):
         B, Ttgt = input_ids.size()
+
+        if Ttgt > self.decoder_maxlen:
+            raise ValueError(f"Current input is longer than maximum allowed length, got: {Ttgt}")
+
         # decoder embedding
         token_embeddings = self.wte(input_ids) # each index maps to a (learnable) vector
         position_embeddings = self.pos_emb[:, :Ttgt, :] # each position maps to a (learnable) vector
@@ -358,15 +350,14 @@ class TransformerEncoderDecoderModel(nn.Module):
 
         # decoder output and langauge model head
         dec_out = self.decoder((tgt, enc_out, pad_mask))[0]  # returns a tuple
-        lm_logits = self.lm_head(self.ln_f(dec_out))
+        dec_out = self.ln_f(dec_out)
+        if self.use_emb_matrix_head:
+            lm_logits = F.linear(dec_out, self.wte.weight)
+        else:
+            lm_logits = self.lm_head(dec_out)
 
-        del pad_mask # save space for memory
+        del pad_mask # conserve memory
         return lm_logits
-
-
-    @torch.no_grad()
-    def o2f(self):
-        pass
 
 
 # ---- trainer ---- #
@@ -490,6 +481,10 @@ class Config:
     decoder_maxlen = 20
     use_var_masking = True
 
+    output_attentions = False
+    openai_block = True
+    use_emb_matrix_head = False
+
     def __init__(self, **kwargs):
         self.attrs = []
         for k,v in kwargs.items():
@@ -505,7 +500,10 @@ class Config:
                 "pdrop",
                 "vocab_size",
                 "encoder_maxlen",
-                "decoder_maxlen"
+                "decoder_maxlen",
+                "output_attentions",
+                "openai_block",
+                "use_emb_matrix_head"
             ] + self.attrs)) 
         ]) + "\n"
 
@@ -546,58 +544,58 @@ class TrainerConfig:
         ]) + "\n"
 
 
-# if __name__ == "__main__":
-#     config = Config(batch_size = 4, num_samples = 14)
-#     print(config)
+if __name__ == "__main__":
+    config = Config(batch_size=4, encoder_maxlen=14, use_emb_matrix_head=True)
+    print(config)
 
-#     print("---- MODEL ----")
-#     model = TransformerEncoderDecoderModel(config)
-#     # print(model)
+    print("---- MODEL ----")
+    model = TransformerEncoderDecoderModel(config)
+    # print(model)
 
-#     def get_dummy_encoder_input():
-#         return {
-#             "x": torch.randn(config.batch_size, config.num_samples, 1),
-#             "y": torch.randn(config.batch_size, config.num_samples, 1),
-#             "z": torch.randn(config.batch_size, config.num_samples, 1),
-#             "t": torch.randn(config.batch_size, config.num_samples, 1),
-#             "o": torch.randn(config.batch_size, config.num_samples, 1),
-#             "mask_x": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-#             "mask_y": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-#             "mask_z": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-#             "mask_t": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-#         }
+    def get_dummy_encoder_input():
+        return {
+            "x": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "y": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "z": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "t": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "o": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "mask_x": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+            "mask_y": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+            "mask_z": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+            "mask_t": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+        }
 
-#     def get_dummy_decoder_input():
-#         attention_mask = []
-#         for _ in range(config.batch_size):
-#             attn = [1, ]*(config.maxlen - 4)
-#             attn += [0, ]*(config.maxlen + 1 - len(attn))
-#             attention_mask.append(attn)
-#         return {
-#             "input_ids": torch.from_numpy(
-#                 np.random.randint(config.vocab_size, size=(config.batch_size, config.maxlen + 1))
-#             ),
-#             "attention_mask": torch.from_numpy(np.asarray(attention_mask).astype(np.float32))
-#         }
+    def get_dummy_decoder_input():
+        attention_mask = []
+        for _ in range(config.batch_size):
+            attn = [1, ]*(config.decoder_maxlen - 4)
+            attn += [0, ]*(config.decoder_maxlen + 1 - len(attn))
+            attention_mask.append(attn)
+        return {
+            "input_ids": torch.from_numpy(
+                np.random.randint(config.vocab_size, size=(
+                    config.batch_size, config.decoder_maxlen + 1))
+            ),
+            "attention_mask": torch.from_numpy(np.asarray(attention_mask).astype(np.float32))
+        }
     
-#     print("---- Encoder ----")
-#     encoder_inputs = get_dummy_encoder_input()
-#     for k, v in encoder_inputs.items():
-#         print(f"{k} --> {(v.shape, v.dtype)}")
+    print("---- Encoder ----")
+    encoder_inputs = get_dummy_encoder_input()
+    for k, v in encoder_inputs.items():
+        print(f"{k} --> {(v.shape, v.dtype)}")
 
-    
-#     print("---- DECODER ----")
-#     decoder_inputs = get_dummy_decoder_input()
-#     for k, v in decoder_inputs.items():
-#         print(f"{k} --> {v.shape}")
+    print("---- DECODER ----")
+    decoder_inputs = get_dummy_decoder_input()
+    for k, v in decoder_inputs.items():
+        print(f"{k} --> {v.shape}")
 
-#     # now we feed shit to the model --> w/o loss
-#     logits, loss = model(
-#         **encoder_inputs,
-#         **{k:v[:,:-1] for k,v in decoder_inputs.items()},
-#         targets = decoder_inputs["input_ids"][:, 1:],
-#         verbose = True
-#     )
+    # now we feed shit to the model --> w/o loss
+    logits, loss = model(
+        **encoder_inputs,
+        **{k:v[:,:-1] for k,v in decoder_inputs.items()},
+        targets = decoder_inputs["input_ids"][:, 1:],
+        verbose = True
+    )
 
 #     print("Predictions:", torch.argmax(logits,dim  = -1), f"Loss: {loss}")
 
