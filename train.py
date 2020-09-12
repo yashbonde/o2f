@@ -8,7 +8,6 @@ import numpy as np
 from argparse import ArgumentParser
 
 import torch
-from torch._C import dtype
 from torch.utils.data import Dataset, DataLoader
 
 from model import Config, TrainerConfig, Trainer

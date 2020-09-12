@@ -13,6 +13,12 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+import torch_geometric as tgx
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import add_self_loops, degree
+from torch_scatter.scatter import scatter_max
+from torch_scatter import scatter_mean
+
 from prepare_data import VOCAB
 
 
@@ -180,19 +186,20 @@ class TransformerEncoderDecoderModel(nn.Module):
         self.encoder = nn.Sequential(*[EncoderBlock(config) for _ in range(config.n_layer)])
         self.decoder = nn.Sequential(*[DecoderBlock(config) for _ in range(config.n_layer)])
 
-        # for encoder embedding
-        self.linx = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
-        self.liny = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
-        self.linz = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
-        self.lint = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
-        self.lino = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+        if hasattr(config, "graph_encode") and config.graph_encode:
+            pass
+        else:
+            # for encoder embedding
+            self.linx = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+            self.liny = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+            self.linz = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+            self.lint = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+            self.lino = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
         self.embd = nn.Embedding(5, config.n_embd)
 
         # for decoder embedding
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.pos_emb = nn.Parameter(torch.zeros(1, config.decoder_maxlen, config.n_embd))
-
-        # for decoder head
         self.ln_f = nn.LayerNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias = False)
 
@@ -360,6 +367,112 @@ class TransformerEncoderDecoderModel(nn.Module):
         return lm_logits
 
 
+
+# take the input and pass it in the graph encoder first then use
+# the generated graph embeddings as the input to the encoder
+class GraphBlock(nn.Module):
+    # Using a simple graph Block I built for other project, from:
+    # https://github.com/yashbonde/vaayuvidha/blob/master/tests/static_temp_gnn.py
+    def __init__(self, config):
+        super().__init__()
+
+        # for node_edge <- node + edge_attr
+        self.edge_lin = nn.Sequential(
+            nn.Linear(int(config.n_embd * 2), config.n_embd),
+            nn.ReLU()
+        )
+        self.edge_drop = nn.Dropout(config.pdrop)
+
+        # for node_2 <- node + global + node_edge
+        self.node_lin = nn.Sequential(
+            nn.Linear(int(config.n_embd * 3), int(config.n_embd * 4)),
+            nn.ReLU(),
+            nn.Linear(int(config.n_embd * 4), config.n_embd)
+        )
+        self.node_drop = nn.Dropout(config.pdrop)
+
+        # for global <- node_2 + global
+        self.glob_lin = nn.Sequential(
+            nn.Linear(int(config.n_embd * 2), config.n_embd),
+            nn.ReLU()
+        )
+        self.glob_drop = nn.Dropout(config.pdrop)
+
+    def forward(self, d):
+        # when stacking inputs == outputs, so pass a tuple
+        x, edge_index, e, u, batch = d # data tuple
+
+        row, col = edge_index
+
+        out = self.edge_lin(torch.cat((x[row], e), dim = -1))
+        out, argmax = scatter_max(out, col, dim=0, dim_size=x.size(0))
+        out = self.edge_drop(out)
+        out = self.node_drop(self.node_lin(torch.cat((out, x, u[batch]), dim = -1)))
+        x = x + out # residual
+
+        x_u, argmax = scatter_max(x, batch, dim=0)
+        out = self.glob_lin(torch.cat((x_u, u), dim = 1))
+        u = u + out # residual
+        return (x, edge_index, e, u, batch)  # data tuple
+
+
+class TransformerGraphEncoderDecoderModel(TransformerEncoderDecoderModel):
+    def __init__(self):
+        assert (
+            hasattr(config, "graph_encode") and config.graph_encode,
+            "Do not initiliase GraphEncoder model if you are not going "
+            "to use it, can break further things"
+        )
+        # loads most of the things all we need to make is the graph network
+        super().__init__(config)
+
+        self.graph = nn.Sequential(*[GraphBlock(config),]*config.n_graph_blocks)
+
+    def _convert_to_graph_input(self):
+        pass
+
+    def forward(self,
+                x, y, z, t, o,
+                input_ids, attention_mask,
+                targets=None,
+                verbose=False,
+                **kwargs
+                ):
+        if verbose:
+            print("---- FORWARD ----")
+
+        b = 
+
+        # embed the input and pass through the encoder layers
+        enc_out = self.encoder(out)
+
+        # take the embeddings from encoder and input to decoder
+        # and get the output logits
+        lm_logits = self.dec_out(
+            enc_out, input_ids, attention_mask, verbose
+        )
+        if verbose:
+            print(f"Logits: {lm_logits.size()}")
+
+        # if the targets are given then
+        loss = None
+        if targets is not None:
+            lm_logits = lm_logits.view(-1, lm_logits.size(-1))
+            targets = targets.contiguous().view(-1)
+            att_loss = attention_mask.contiguous().view(-1)  # flatten for loss
+
+            # we flatten the loss and apply attention mask because we do not need
+            # to train model on [PAD] tokens
+            loss = F.cross_entropy(lm_logits, targets, reduce=False)
+            loss = loss * att_loss
+            loss = torch.mean(loss)
+        return lm_logits, loss
+
+
+    
+
+
+
 # ---- trainer ---- #
 class Trainer:
     def __init__(self, model, train_dataset, test_dataset, config, optimizer = None):
@@ -368,6 +481,8 @@ class Trainer:
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
         self.config = config
+
+        self.model.apply(model._init_weights) # apply the specific weights
 
         self.device = "cpu"
         if torch.cuda.is_available():
