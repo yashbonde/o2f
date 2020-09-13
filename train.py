@@ -36,9 +36,9 @@ args.add_argument("--n_head", default=8, type=int,
                   help="number of heads for multihead attention")
 args.add_argument("--n_layer", default=6, type=int,
                   help="number of stacks in encoder and decoder")
-args.add_argument("--encoder_maxlen", default=100, type=int,
+args.add_argument("--encoder_maxlen", default=40, type=int,
                   help="maximum length of encoder input")
-args.add_argument("--decoder_maxlen", default=40, type=int,
+args.add_argument("--decoder_maxlen", default=20, type=int,
                   help="maximum length of decoder input")
 args.add_argument("--use_var_masking", default=False, type=bool,
                   help="apply mask for variables")
@@ -46,7 +46,7 @@ args.add_argument("--pdrop", default=0.1, type=float,
                   help="dropout probability")
 args.add_argument("--openai_block", default=True, type=bool,
                   help="if true perform layer norm before input")
-args.add_argument("--output_attentions", default=False, type=bool,
+args.add_argument("--output_attentions", default=True, type=bool,
                   help="if true returns the attention matrices from each layer")
 args.add_argument("--use_emb_matrix_head", default=True, type=bool,
                   help="if true uses the transpose of the embedding matrix")
@@ -107,6 +107,8 @@ class Ds(Dataset):
         with open(args.data_json, "r") as f:
             logging.info(f"Loading file for: `{mode}` mode")
             data = json.load(f)
+
+        print(f'Loaded: {len(data["encoder"]["x"])} samples')
 
         # convert to line wise indexing
         split_idx = int(args.train_split * len(data["encoder"]["x"]))
@@ -171,7 +173,7 @@ ds_test = Ds("test")
 
 trainer = Trainer(model, ds_train, ds_test, trainer_conf, optimizer=optimizer)
 try:
-    trainer.train()
+    trainer.train(verbose=False)
 except Exception as e:
     logging.error(f"Exception: {e} has occured", exc_info = True)
     show_notification("o2f Training", f"Exception {e} has occured")

@@ -162,7 +162,7 @@ def beam_search(
 
     cur_len = input_ids.size(1)
     attention_mask = torch.ones((batch_size * beam_size, cur_len)).long()
-    enc_out = model.enc_out(**obs)  # get the encoder output for cached
+    enc_out = model.enc_out(**obs)[0]  # get the encoder output for cached
 
     # generated hypotheses
     generated_hyps = [
@@ -186,7 +186,7 @@ def beam_search(
 
     while cur_len < max_length:
         # (batch_size * beam_size, cur_len, vocab_size)
-        logits = model.dec_out(enc_out, input_ids, attention_mask, verbose=False)
+        logits = model.dec_out(enc_out, input_ids, attention_mask, verbose=False)[0{}]
         # (batch_size * beam_size, vocab_size)
         next_token_logits = logits[:, -1, :]
 

@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from prepare_data import VOCAB
+from utils import normalise_image
 
 
 class CausalSelfAttention(nn.Module):
@@ -130,7 +131,8 @@ class EncoderBlock(nn.Module):
         x = x + self.mlp(x)
         if not self.openai_block: x = self.ln2(x)
 
-        o = (x,)
+        # output is same is input or add attentions if asked
+        o = (x, )
         if self.output_attentions:
             oattn = ((self_att[1],),) + d[1]
             o = (x, oattn)
@@ -182,6 +184,7 @@ class DecoderBlock(nn.Module):
         x = x + self.mlp(x)
         if not self.openai_block: x = self.ln3(x)
 
+        # output is same is input or add attentions if asked
         o = (x, mem, pad_mask,)
         if self.output_attentions:
             oattn = ((self_att[1], mem_att[1],), *d[3])
@@ -362,9 +365,10 @@ class TransformerEncoderDecoderModel(nn.Module):
         src = x + y + z + t + o # [B, N, n_embd]
         if verbose: print(f"Source: {src.size()}")
 
+        enc_in = (src,)
         if self.output_attentions:
-            src = (src, ())
-        enc_out = self.encoder(src)
+            enc_in = (src, ())
+        enc_out = self.encoder(enc_in)
         return enc_out
 
     def dec_out(self, enc_out, input_ids, attention_mask, verbose = False):
@@ -458,12 +462,17 @@ class Trainer:
                 else:
                     pbar.set_description(f"[VAL]")
                 with torch.set_grad_enabled(is_train):
-                    logits, loss = model(
+                    out = model(
                         **enc,
                         **{k: v[:, :-1] for k, v in dec.items()},
                         targets=dec["input_ids"][:, 1:],
                         verbose=verbose
                     )
+
+                    if model.output_attentions:
+                        lm_logits, loss, atts = out
+                    else:
+                        lm_logits, loss = out
 
                     if str(loss.item()) == "nan":
                         print(enc)
@@ -477,6 +486,45 @@ class Trainer:
                         # add things to tb
                         tb.add_scalar("loss", loss.item(), global_step=gs, walltime=time.time())
                         tb.add_scalar("lr", lr, global_step=gs, walltime=time.time())
+                        
+                        if model.output_attentions:
+                            # process the attns and get the following:
+                            # encoder_attns - for each layer / one head
+                            # decoder_encoder_attns - for each layer / one head
+                            # decoder_self_attns - for each layer / one head
+
+                            # shapes for reference:
+                            # {
+                            #   'encoder': [torch.Size([128, 8, 40, 40]),] * n_layers,
+                            #   'decoder_self': [torch.Size([128, 8, 20, 20]),] * n_layers,
+                            #   'decoder_mem': [torch.Size([128, 8, 20, 40]),] * n_layers
+                            # }
+                            out = {
+                                "encoder": [x[0].detach().numpy()[0,0] for x in atts[0]],
+                                "decoder_self": [x[0].detach().numpy()[0,0] for x in atts[1]],
+                                "decoder_mem": [x[1].detach().numpy()[0,0] for x in atts[1]],
+                            }
+
+                            # print({k:[x.shape for x in v] for k,v in out.items()})
+
+                            # add to tb summaries
+                            for l, enc_att in enumerate(out["encoder"]):
+                                tb.add_image(
+                                    f"encoder_attn/layer_{l}", normalise_image(enc_att),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats="HW"
+                                )
+                            for l, (ds, dm) in enumerate(zip(out["decoder_self"], out["decoder_mem"])):
+                                tb.add_image(
+                                    f"decoder_mem_attn/layer_{l}", normalise_image(dm),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats= "HW"
+                                )
+                                tb.add_image(
+                                    f"decoder_self_attn/layer_{l}", normalise_image(ds),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats="HW"
+                                )
 
                     # back prob and update the gradient
                     for p in model.parameters(): # better than model.zero_grad()
