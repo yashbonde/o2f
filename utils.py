@@ -73,3 +73,9 @@ def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def normalise_image(img):
+    img -= np.min(img)
+    img /= np.max(img)
+    return img

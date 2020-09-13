@@ -20,6 +20,7 @@ from torch_scatter.scatter import scatter_max
 from torch_scatter import scatter_mean
 
 from prepare_data import VOCAB
+from utils import normalise_image
 
 
 class CausalSelfAttention(nn.Module):
@@ -62,6 +63,10 @@ class CausalSelfAttention(nn.Module):
 
         self.n_head = config.n_head
 
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
     def forward(self, tgt, memory = None, forward_mask = False, pad_mask = None):
         # this is going to be the case with encoders and decoder bottom layer
         if memory == None:
@@ -91,7 +96,11 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         y = self.resid_drop(self.proj(y))
-        return y
+
+        out = (y,)
+        if self.output_attentions:
+            out = (y, att)
+        return out
 
 
 class EncoderBlock(nn.Module):
@@ -110,17 +119,30 @@ class EncoderBlock(nn.Module):
         )
         self.openai_block = config.openai_block
 
-    def forward(self, x):
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
+    def forward(self, d):
         # in OpenAI implementation they perform normalisation before attention and MLP
+        x = d[0]
+
         if self.openai_block: x = self.ln1(x)
-        x = x + self.attn(x)
+        self_att = self.attn(x)
+        x = x + self_att[0]
         if not self.openai_block: x = self.ln1(x)
         
         # MLP
         if self.openai_block: x = self.ln2(x)
         x = x + self.mlp(x)
         if not self.openai_block: x = self.ln2(x)
-        return x
+
+        # output is same is input or add attentions if asked
+        o = (x, )
+        if self.output_attentions:
+            oattn = ((self_att[1],),) + d[1]
+            o = (x, oattn)
+        return o
 
 
 class DecoderBlock(nn.Module):
@@ -142,26 +164,38 @@ class DecoderBlock(nn.Module):
 
         self.openai_block = config.openai_block
 
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
+
     def forward(self, d):
         # in OpenAI implementation they perform normalisation before attention and MLP
-        x, mem, pad_mask = d
+        x, mem, pad_mask = d[:3]
 
         # self-attention
         if self.openai_block: x = self.ln1(x)
-        x = x + self.attn(x, forward_mask=True, pad_mask=pad_mask)
+        self_att = self.attn(x, forward_mask=True, pad_mask=pad_mask)
+        x = x + self_att[0]
         if not self.openai_block: x = self.ln1(x)
 
         # memory-attention
         if self.openai_block: x = self.ln2(x)
-        x = x + self.attn(x, mem)
+        mem_att = self.attn(x, mem)
+        x = x + mem_att[0]
         if not self.openai_block: x = self.ln2(x)
 
-        
         # MLP
         if self.openai_block: x = self.ln3(x)
         x = x + self.mlp(x)
         if not self.openai_block: x = self.ln3(x)
-        return (x, mem, pad_mask)
+
+        # output is same is input or add attentions if asked
+        o = (x, mem, pad_mask,)
+        if self.output_attentions:
+            oattn = ((self_att[1], mem_att[1],), *d[3])
+            o = (x, mem, pad_mask, oattn)
+        return o
 
 
 class TransformerEncoderDecoderModel(nn.Module):
@@ -213,6 +247,10 @@ class TransformerEncoderDecoderModel(nn.Module):
 
         self.openai_block = config.openai_block
         self.use_emb_matrix_head = config.use_emb_matrix_head
+
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -271,7 +309,7 @@ class TransformerEncoderDecoderModel(nn.Module):
     def forward(self,
             x, y, z, t, o, mask_x, mask_y, mask_z, mask_t,
             input_ids, attention_mask,
-            targets=None, verbose = False
+            targets=None, verbose = False,
         ):
         if verbose:
             print("---- FORWARD ----")
@@ -280,13 +318,13 @@ class TransformerEncoderDecoderModel(nn.Module):
         enc_out = self.enc_out(
             x, y, z, t, o,
             mask_x, mask_y, mask_z, mask_t,
-            verbose
+            verbose,
         )
 
         # take the embeddings from encoder and input to decoder
         # and get the output logits
-        lm_logits = self.dec_out(
-            enc_out, input_ids, attention_mask, verbose
+        lm_logits, dec_attn = self.dec_out(
+            enc_out[0], input_ids, attention_mask, verbose
         )
         if verbose:
             print(f"Logits: {lm_logits.size()}")
@@ -303,7 +341,13 @@ class TransformerEncoderDecoderModel(nn.Module):
             loss = F.cross_entropy(lm_logits, targets, reduce=False)
             loss = loss * att_loss
             loss = torch.mean(loss)
-        return lm_logits, loss
+
+        o = (lm_logits, loss)
+        if self.output_attentions:
+            enc_attn = enc_out[-1]
+            dec_attn = dec_attn[-1]
+            o = (lm_logits, loss, (enc_attn, dec_attn))
+        return o
 
 
     def enc_out(self,
@@ -328,7 +372,10 @@ class TransformerEncoderDecoderModel(nn.Module):
         src = x + y + z + t + o # [B, N, n_embd]
         if verbose: print(f"Source: {src.size()}")
 
-        enc_out = self.encoder(src)
+        enc_in = (src,)
+        if self.output_attentions:
+            enc_in = (src, ())
+        enc_out = self.encoder(enc_in)
         return enc_out
 
     def dec_out(self, enc_out, input_ids, attention_mask, verbose = False):
@@ -356,15 +403,18 @@ class TransformerEncoderDecoderModel(nn.Module):
             print(f"attention_mask: {attention_mask.size()}")
 
         # decoder output and langauge model head
-        dec_out = self.decoder((tgt, enc_out, pad_mask))[0]  # returns a tuple
-        dec_out = self.ln_f(dec_out)
+        dec_in = (tgt, enc_out, pad_mask)
+        if self.output_attentions:
+            dec_in = (tgt, enc_out, pad_mask, ())
+        out = self.decoder(dec_in)
+        dec_out = self.ln_f(out[0])
         if self.use_emb_matrix_head:
             lm_logits = F.linear(dec_out, self.wte.weight)
         else:
             lm_logits = self.lm_head(dec_out)
 
         del pad_mask # conserve memory
-        return lm_logits
+        return lm_logits, out
 
 
 
@@ -527,12 +577,17 @@ class Trainer:
                 else:
                     pbar.set_description(f"[VAL]")
                 with torch.set_grad_enabled(is_train):
-                    logits, loss = model(
+                    out = model(
                         **enc,
                         **{k: v[:, :-1] for k, v in dec.items()},
                         targets=dec["input_ids"][:, 1:],
                         verbose=verbose
                     )
+
+                    if model.output_attentions:
+                        lm_logits, loss, atts = out
+                    else:
+                        lm_logits, loss = out
 
                     if str(loss.item()) == "nan":
                         print(enc)
@@ -546,6 +601,45 @@ class Trainer:
                         # add things to tb
                         tb.add_scalar("loss", loss.item(), global_step=gs, walltime=time.time())
                         tb.add_scalar("lr", lr, global_step=gs, walltime=time.time())
+                        
+                        if model.output_attentions:
+                            # process the attns and get the following:
+                            # encoder_attns - for each layer / one head
+                            # decoder_encoder_attns - for each layer / one head
+                            # decoder_self_attns - for each layer / one head
+
+                            # shapes for reference:
+                            # {
+                            #   'encoder': [torch.Size([128, 8, 40, 40]),] * n_layers,
+                            #   'decoder_self': [torch.Size([128, 8, 20, 20]),] * n_layers,
+                            #   'decoder_mem': [torch.Size([128, 8, 20, 40]),] * n_layers
+                            # }
+                            out = {
+                                "encoder": [x[0].detach().numpy()[0,0] for x in atts[0]],
+                                "decoder_self": [x[0].detach().numpy()[0,0] for x in atts[1]],
+                                "decoder_mem": [x[1].detach().numpy()[0,0] for x in atts[1]],
+                            }
+
+                            # print({k:[x.shape for x in v] for k,v in out.items()})
+
+                            # add to tb summaries
+                            for l, enc_att in enumerate(out["encoder"]):
+                                tb.add_image(
+                                    f"encoder_attn/layer_{l}", normalise_image(enc_att),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats="HW"
+                                )
+                            for l, (ds, dm) in enumerate(zip(out["decoder_self"], out["decoder_mem"])):
+                                tb.add_image(
+                                    f"decoder_mem_attn/layer_{l}", normalise_image(dm),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats= "HW"
+                                )
+                                tb.add_image(
+                                    f"decoder_self_attn/layer_{l}", normalise_image(ds),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats="HW"
+                                )
 
                     # back prob and update the gradient
                     for p in model.parameters(): # better than model.zero_grad()
