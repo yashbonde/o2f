@@ -55,6 +55,8 @@ CONSTANTS = ["pi", "E"]
 
 ROUND = 3
 COEFF = [0, +10.]
+CONST_RANGE = [-2, +2]
+OBS_RANGE = [-20, +20]
 
 UNA_OPS = [k for k, v in OPS.items() if v[1] == 1]
 BIN_OPS = [k for k, v in OPS.items() if v[1] == 2]
@@ -413,10 +415,12 @@ def create_one_example(
         obs = []
         while len(obs) < num_samples:
             subs = {
-                x: round(np.random.uniform(low=-1., high=+1.), ROUND)
+                x: round(np.random.uniform(low=CONST_RANGE[0], high=CONST_RANGE[1]), ROUND)
                 for x in variables
             }
             out = simp_expr.evalf(subs=subs, n=ROUND)
+            if not (OBS_RANGE[0] < out < OBS_RANGE[1]):
+                continue
             subs.update({"o": out})
             if "I" in str(out) or str(out) in ["nan"]:  # imaginary numbers like log of a negative number
                 continue
@@ -561,6 +565,30 @@ class DataConfig():
     maxlen=20
     batch_size = 10
 
+    def __init__(self, **kwargs):
+        self.attrs = []
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+            self.attrs.append(k)
+
+    def __repr__(self):
+        return "---- MODEL CONFIGURATION ----\n" + \
+            "\n".join([f"{k}\t{getattr(self, k)}" for k in list(set([
+                "Nmin",
+                "Nmax",
+                "p1min",
+                "p1max",
+                "p2min",
+                "p2max",
+                "lmin",
+                "lmax",
+                "num_samples",
+                "dataset_size",
+                "maxlen",
+                "batch_size",
+            ] + self.attrs))
+            ]) + "\n"
+
 
 if __name__ == "__main__":
     import sys
@@ -621,31 +649,34 @@ if __name__ == "__main__":
     # DataLoader is good when you have to use in testing, but pretty useless to
     # actually know how long it is going to take when things are hidden
     for i, (_enc, _dec) in enumerate(DataLoader(ds, batch_size = data_config.batch_size)):
-        pbar.update()
-        # print(f"---> setting seed: {i}")
-        # set_seed(i)
-        # print("---> enc:", {k: (v.size(), v.dtype) for k, v in _enc.items()})
-        # print("---> dec:", {k: (v.size(), v.dtype) for k, v in _dec.items()})
+        try:
+            pbar.update()
+            # print(f"---> setting seed: {i}")
+            # set_seed(i)
+            # print("---> enc:", {k: (v.size(), v.dtype) for k, v in _enc.items()})
+            # print("---> dec:", {k: (v.size(), v.dtype) for k, v in _dec.items()})
 
-        # print("--- converting to lists ---")
-        enc = {k: v.tolist() for k, v in _enc.items()}
-        dec = {k: v.tolist() for k, v in _dec.items()}
+            # print("--- converting to lists ---")
+            enc = {k: v.tolist() for k, v in _enc.items()}
+            dec = {k: v.tolist() for k, v in _dec.items()}
 
-        for v in enc:
-            encoder.setdefault(v, [])
-            encoder[v].extend(enc[v])
-        for k in decoder.keys():
-            decoder[k].extend(dec[k])
+            for v in enc:
+                encoder.setdefault(v, [])
+                encoder[v].extend(enc[v])
+            for k in decoder.keys():
+                decoder[k].extend(dec[k])
 
-        if len(decoder["input_ids"]) >= data_config.buffer_size and mode == "large":
-            with open(f"data/{unk_name}_sample_{i}.json", "w") as f:
-                f.write(json.dumps({
-                    "encoder": encoder,
-                    "decoder": decoder
-                }))
-                show_notification("o2f Data", f"File saving completed at: data/{unk_name}_sample_{i}.json")
-                encoder = {}
-                decoder = {"input_ids": [], "attention_mask": []}
+            if len(decoder["input_ids"]) >= data_config.buffer_size and mode == "large":
+                with open(f"data/{unk_name}_sample_{i}.json", "w") as f:
+                    f.write(json.dumps({
+                        "encoder": encoder,
+                        "decoder": decoder
+                    }))
+                    show_notification("o2f Data", f"File saving completed at: data/{unk_name}_sample_{i}.json")
+                    encoder = {}
+                    decoder = {"input_ids": [], "attention_mask": []}
+        except Exception as e:
+            show_notification("o2f Data", f"Exception: {e} raised")
 
     show_notification("o2f Data", f"Script {unk_name} compelte in {time.time() - start_time :.3}s")
 

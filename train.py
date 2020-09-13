@@ -8,7 +8,6 @@ import numpy as np
 from argparse import ArgumentParser
 
 import torch
-from torch._C import dtype
 from torch.utils.data import Dataset, DataLoader
 
 from model import Config, TrainerConfig, Trainer
@@ -26,7 +25,7 @@ args.add_argument("--name", default=None, type=str,
                   help="folder for this model")
 args.add_argument("--data_json", default=None, type=str,
                   help="path to data json")
-args.add_argument("--train_split", default=0.9, type=float,
+args.add_argument("--train_split", default=0.913, type=float,
                   help="train size split")
 
 # ---- config ---- #
@@ -36,17 +35,23 @@ args.add_argument("--n_head", default=8, type=int,
                   help="number of heads for multihead attention")
 args.add_argument("--n_layer", default=6, type=int,
                   help="number of stacks in encoder and decoder")
-args.add_argument("--encoder_maxlen", default=100, type=int,
+args.add_argument("--encoder_maxlen", default=40, type=int,
                   help="maximum length of encoder input")
-args.add_argument("--decoder_maxlen", default=40, type=int,
+args.add_argument("--decoder_maxlen", default=20, type=int,
                   help="maximum length of decoder input")
 args.add_argument("--use_var_masking", default=False, type=bool,
                   help="apply mask for variables")
 args.add_argument("--pdrop", default=0.1, type=float,
                   help="dropout probability")
+args.add_argument("--openai_block", default=True, type=bool,
+                  help="if true perform layer norm before input")
+args.add_argument("--output_attentions", default=True, type=bool,
+                  help="if true returns the attention matrices from each layer")
+args.add_argument("--use_emb_matrix_head", default=True, type=bool,
+                  help="if true uses the transpose of the embedding matrix")
 
 # ---- trainer ---- #
-args.add_argument("--epochs", default=20, type=int,
+args.add_argument("--epochs", default=3, type=int,
                   help="number of epochs to train the model")
 args.add_argument("--batch_size", default=128, type=int,
                   help="batch size for training")
@@ -58,7 +63,7 @@ args.add_argument("--beta2", default=0.95, type=float,
                   help="beta_2 parameter for AdamW")
 args.add_argument("--grad_norm_clip", default=1.0,
                   type=float, help="gradient clipping value")
-args.add_argument("--warmup_steps", default=60,
+args.add_argument("--warmup_steps", default=300,
                   type=int, help="warmup steps")
 args = args.parse_args()
 
@@ -80,7 +85,10 @@ config = Config(
     pdrop=args.pdrop,
     encoder_maxlen = args.encoder_maxlen,
     decoder_maxlen=args.decoder_maxlen,
-    use_var_masking=args.use_var_masking
+    use_var_masking=args.use_var_masking,
+    openai_block=args.openai_block,
+    output_attentions=args.output_attentions,
+    use_emb_matrix_head=args.use_emb_matrix_head
 )
 
 logging.info(trainer_conf)
@@ -98,6 +106,8 @@ class Ds(Dataset):
         with open(args.data_json, "r") as f:
             logging.info(f"Loading file for: `{mode}` mode")
             data = json.load(f)
+
+        print(f'Loaded: {len(data["encoder"]["x"])} samples')
 
         # convert to line wise indexing
         split_idx = int(args.train_split * len(data["encoder"]["x"]))
@@ -141,12 +151,6 @@ class Ds(Dataset):
 # create models and dataloader
 model = TransformerEncoderDecoderModel(config)
 optimizer = None
-# optimizer = torch.optim.AdamW(
-#     model.parameters(),
-#     lr=trainer_conf.learning_rate,
-#     betas=trainer_conf.betas
-# )
-# DataLoader(, batch_size=trainer_conf.batch_size, shuffle=True)
 ds_train = Ds("train")
 ds_test = Ds("test")
 
@@ -168,7 +172,7 @@ ds_test = Ds("test")
 
 trainer = Trainer(model, ds_train, ds_test, trainer_conf, optimizer=optimizer)
 try:
-    trainer.train()
+    trainer.train(verbose=False)
 except Exception as e:
     logging.error(f"Exception: {e} has occured", exc_info = True)
     show_notification("o2f Training", f"Exception {e} has occured")

@@ -13,7 +13,14 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+import torch_geometric as tgx
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import add_self_loops, degree
+from torch_scatter.scatter import scatter_max
+from torch_scatter import scatter_mean
+
 from prepare_data import VOCAB
+from utils import normalise_image
 
 
 class CausalSelfAttention(nn.Module):
@@ -56,6 +63,10 @@ class CausalSelfAttention(nn.Module):
 
         self.n_head = config.n_head
 
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
     def forward(self, tgt, memory = None, forward_mask = False, pad_mask = None):
         # this is going to be the case with encoders and decoder bottom layer
         if memory == None:
@@ -85,7 +96,11 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         y = self.resid_drop(self.proj(y))
-        return y
+
+        out = (y,)
+        if self.output_attentions:
+            out = (y, att)
+        return out
 
 
 class EncoderBlock(nn.Module):
@@ -102,11 +117,32 @@ class EncoderBlock(nn.Module):
             nn.Linear(4 * config.n_embd, config.n_embd),
             nn.Dropout(config.pdrop),
         )
+        self.openai_block = config.openai_block
 
-    def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
-        return x
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
+    def forward(self, d):
+        # in OpenAI implementation they perform normalisation before attention and MLP
+        x = d[0]
+
+        if self.openai_block: x = self.ln1(x)
+        self_att = self.attn(x)
+        x = x + self_att[0]
+        if not self.openai_block: x = self.ln1(x)
+        
+        # MLP
+        if self.openai_block: x = self.ln2(x)
+        x = x + self.mlp(x)
+        if not self.openai_block: x = self.ln2(x)
+
+        # output is same is input or add attentions if asked
+        o = (x, )
+        if self.output_attentions:
+            oattn = ((self_att[1],),) + d[1]
+            o = (x, oattn)
+        return o
 
 
 class DecoderBlock(nn.Module):
@@ -126,12 +162,40 @@ class DecoderBlock(nn.Module):
             nn.Dropout(config.pdrop),
         )
 
+        self.openai_block = config.openai_block
+
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
+
     def forward(self, d):
-        x, mem, pad_mask = d
-        x = x + self.attn(self.ln1(x), forward_mask = True, pad_mask = pad_mask)
-        x = x + self.attn(self.ln2(x), mem)
-        x = x + self.mlp(self.ln3(x))
-        return (x, mem, pad_mask)
+        # in OpenAI implementation they perform normalisation before attention and MLP
+        x, mem, pad_mask = d[:3]
+
+        # self-attention
+        if self.openai_block: x = self.ln1(x)
+        self_att = self.attn(x, forward_mask=True, pad_mask=pad_mask)
+        x = x + self_att[0]
+        if not self.openai_block: x = self.ln1(x)
+
+        # memory-attention
+        if self.openai_block: x = self.ln2(x)
+        mem_att = self.attn(x, mem)
+        x = x + mem_att[0]
+        if not self.openai_block: x = self.ln2(x)
+
+        # MLP
+        if self.openai_block: x = self.ln3(x)
+        x = x + self.mlp(x)
+        if not self.openai_block: x = self.ln3(x)
+
+        # output is same is input or add attentions if asked
+        o = (x, mem, pad_mask,)
+        if self.output_attentions:
+            oattn = ((self_att[1], mem_att[1],), *d[3])
+            o = (x, mem, pad_mask, oattn)
+        return o
 
 
 class TransformerEncoderDecoderModel(nn.Module):
@@ -156,19 +220,20 @@ class TransformerEncoderDecoderModel(nn.Module):
         self.encoder = nn.Sequential(*[EncoderBlock(config) for _ in range(config.n_layer)])
         self.decoder = nn.Sequential(*[DecoderBlock(config) for _ in range(config.n_layer)])
 
-        # for encoder embedding
-        self.linx = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
-        self.liny = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
-        self.linz = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
-        self.lint = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
-        self.lino = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+        if hasattr(config, "graph_encode") and config.graph_encode:
+            pass
+        else:
+            # for encoder embedding
+            self.linx = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+            self.liny = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+            self.linz = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+            self.lint = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
+            self.lino = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
         self.embd = nn.Embedding(5, config.n_embd)
 
         # for decoder embedding
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.pos_emb = nn.Parameter(torch.zeros(1, config.decoder_maxlen, config.n_embd))
-
-        # for decoder head
         self.ln_f = nn.LayerNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias = False)
 
@@ -179,6 +244,13 @@ class TransformerEncoderDecoderModel(nn.Module):
         self.use_var_masking = config.use_var_masking
         self.num_params = sum(p.numel() for p in self.parameters())
         logging.info(f"number of parameters: {self.num_params}")
+
+        self.openai_block = config.openai_block
+        self.use_emb_matrix_head = config.use_emb_matrix_head
+
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -237,64 +309,25 @@ class TransformerEncoderDecoderModel(nn.Module):
     def forward(self,
             x, y, z, t, o, mask_x, mask_y, mask_z, mask_t,
             input_ids, attention_mask,
-            targets=None, verbose = False
+            targets=None, verbose = False,
         ):
-        B, Ttgt = input_ids.size()
-
         if verbose:
             print("---- FORWARD ----")
 
-        if Ttgt > self.decoder_maxlen:
-            raise ValueError(f"Current input is longer than maximum allowed length, got: {Ttgt}")
+        # embed the input and pass through the encoder layers
+        enc_out = self.enc_out(
+            x, y, z, t, o,
+            mask_x, mask_y, mask_z, mask_t,
+            verbose,
+        )
 
-        # encoder embedding
-        embd_shape = x.size()[:2]
-        x = self.linx(x) + self.embd(torch.ones(embd_shape).long() * 0) # [B, N, n_embd]
-        y = self.liny(y) + self.embd(torch.ones(embd_shape).long() * 1) # [B, N, n_embd]
-        z = self.linz(z) + self.embd(torch.ones(embd_shape).long() * 2) # [B, N, n_embd]
-        t = self.lint(t) + self.embd(torch.ones(embd_shape).long() * 3) # [B, N, n_embd]
-        o = self.lino(o) + self.embd(torch.ones(embd_shape).long() * 4) # [B, N, n_embd]
-
-        # mask encoder input based on wether the variables are present or not
-        if self.use_var_masking:
-            x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
-            y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
-            z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
-            t = x * mask_t.view(-1, 1, 1) # [B, N, n_embd]
-        src = x + y + z + t + o # [B, N, n_embd]
-
-        # decoder embedding
-        token_embeddings = self.wte(input_ids) # each index maps to a (learnable) vector
-        position_embeddings = self.pos_emb[:, :Ttgt, :] # each position maps to a (learnable) vector
-        tgt = token_embeddings + position_embeddings
-
-        B, trgsz = attention_mask.size()
-        lens = torch.argmax(attention_mask, dim=1)  # [B,]
-        pad_mask = torch.ones((B, trgsz, trgsz), requires_grad=False)
-        for b, l in zip(range(B), lens):
-            pad_mask[b, :l, :l] = 0
-        pad_mask[pad_mask == 1.] = -1e10
-
-        if verbose:
-            print(f"Source: {src.size()}, Target: {tgt.size()}")
-            print("pad:", pad_mask.size(), "att:", attention_mask.size())
-
-        # run the model and get logits --> we need to transpose because of the 
-        # dec_out = self.trans_model(
-        #     src = src.transpose(0, 1),
-        #     tgt = tgt.transpose(0, 1),
-        #     tgt_key_padding_mask=attention_mask
-        # ).transpose(0, 1)
-
-        enc_out = self.encoder(src)
-        dec_out = self.decoder((tgt, enc_out, pad_mask))[0] # returns a tuple
-
-        lm_logits = self.lm_head(self.ln_f(dec_out))
-
+        # take the embeddings from encoder and input to decoder
+        # and get the output logits
+        lm_logits, dec_attn = self.dec_out(
+            enc_out[0], input_ids, attention_mask, verbose
+        )
         if verbose:
             print(f"Logits: {lm_logits.size()}")
-
-        del pad_mask # delete and save memory people
 
         # if the targets are given then
         loss = None
@@ -308,7 +341,13 @@ class TransformerEncoderDecoderModel(nn.Module):
             loss = F.cross_entropy(lm_logits, targets, reduce=False)
             loss = loss * att_loss
             loss = torch.mean(loss)
-        return lm_logits, loss
+
+        o = (lm_logits, loss)
+        if self.output_attentions:
+            enc_attn = enc_out[-1]
+            dec_attn = dec_attn[-1]
+            o = (lm_logits, loss, (enc_attn, dec_attn))
+        return o
 
 
     def enc_out(self,
@@ -333,11 +372,18 @@ class TransformerEncoderDecoderModel(nn.Module):
         src = x + y + z + t + o # [B, N, n_embd]
         if verbose: print(f"Source: {src.size()}")
 
-        enc_out = self.encoder(src)
+        enc_in = (src,)
+        if self.output_attentions:
+            enc_in = (src, ())
+        enc_out = self.encoder(enc_in)
         return enc_out
 
     def dec_out(self, enc_out, input_ids, attention_mask, verbose = False):
         B, Ttgt = input_ids.size()
+
+        if Ttgt > self.decoder_maxlen:
+            raise ValueError(f"Current input is longer than maximum allowed length, got: {Ttgt}")
+
         # decoder embedding
         token_embeddings = self.wte(input_ids) # each index maps to a (learnable) vector
         position_embeddings = self.pos_emb[:, :Ttgt, :] # each position maps to a (learnable) vector
@@ -357,16 +403,124 @@ class TransformerEncoderDecoderModel(nn.Module):
             print(f"attention_mask: {attention_mask.size()}")
 
         # decoder output and langauge model head
-        dec_out = self.decoder((tgt, enc_out, pad_mask))[0]  # returns a tuple
-        lm_logits = self.lm_head(self.ln_f(dec_out))
+        dec_in = (tgt, enc_out, pad_mask)
+        if self.output_attentions:
+            dec_in = (tgt, enc_out, pad_mask, ())
+        out = self.decoder(dec_in)
+        dec_out = self.ln_f(out[0])
+        if self.use_emb_matrix_head:
+            lm_logits = F.linear(dec_out, self.wte.weight)
+        else:
+            lm_logits = self.lm_head(dec_out)
 
-        del pad_mask # save space for memory
-        return lm_logits
+        del pad_mask # conserve memory
+        return lm_logits, out
 
 
-    @torch.no_grad()
-    def o2f(self):
+
+# take the input and pass it in the graph encoder first then use
+# the generated graph embeddings as the input to the encoder
+class GraphBlock(nn.Module):
+    # Using a simple graph Block I built for other project, from:
+    # https://github.com/yashbonde/vaayuvidha/blob/master/tests/static_temp_gnn.py
+    def __init__(self, config):
+        super().__init__()
+
+        # for node_edge <- node + edge_attr
+        self.edge_lin = nn.Sequential(
+            nn.Linear(int(config.n_embd * 2), config.n_embd),
+            nn.ReLU()
+        )
+        self.edge_drop = nn.Dropout(config.pdrop)
+
+        # for node_2 <- node + global + node_edge
+        self.node_lin = nn.Sequential(
+            nn.Linear(int(config.n_embd * 3), int(config.n_embd * 4)),
+            nn.ReLU(),
+            nn.Linear(int(config.n_embd * 4), config.n_embd)
+        )
+        self.node_drop = nn.Dropout(config.pdrop)
+
+        # for global <- node_2 + global
+        self.glob_lin = nn.Sequential(
+            nn.Linear(int(config.n_embd * 2), config.n_embd),
+            nn.ReLU()
+        )
+        self.glob_drop = nn.Dropout(config.pdrop)
+
+    def forward(self, d):
+        # when stacking inputs == outputs, so pass a tuple
+        x, edge_index, e, u, batch = d # data tuple
+
+        row, col = edge_index
+
+        out = self.edge_lin(torch.cat((x[row], e), dim = -1))
+        out, argmax = scatter_max(out, col, dim=0, dim_size=x.size(0))
+        out = self.edge_drop(out)
+        out = self.node_drop(self.node_lin(torch.cat((out, x, u[batch]), dim = -1)))
+        x = x + out # residual
+
+        x_u, argmax = scatter_max(x, batch, dim=0)
+        out = self.glob_lin(torch.cat((x_u, u), dim = 1))
+        u = u + out # residual
+        return (x, edge_index, e, u, batch)  # data tuple
+
+
+class TransformerGraphEncoderDecoderModel(TransformerEncoderDecoderModel):
+    def __init__(self):
+        assert (
+            hasattr(config, "graph_encode") and config.graph_encode,
+            "Do not initiliase GraphEncoder model if you are not going "
+            "to use it, can break further things"
+        )
+        # loads most of the things all we need to make is the graph network
+        super().__init__(config)
+
+        self.graph = nn.Sequential(*[GraphBlock(config),]*config.n_graph_blocks)
+
+    def _convert_to_graph_input(self):
         pass
+
+    def forward(self,
+                x, y, z, t, o,
+                input_ids, attention_mask,
+                targets=None,
+                verbose=False,
+                **kwargs
+                ):
+        if verbose:
+            print("---- FORWARD ----")
+
+        b = 
+
+        # embed the input and pass through the encoder layers
+        enc_out = self.encoder(out)
+
+        # take the embeddings from encoder and input to decoder
+        # and get the output logits
+        lm_logits = self.dec_out(
+            enc_out, input_ids, attention_mask, verbose
+        )
+        if verbose:
+            print(f"Logits: {lm_logits.size()}")
+
+        # if the targets are given then
+        loss = None
+        if targets is not None:
+            lm_logits = lm_logits.view(-1, lm_logits.size(-1))
+            targets = targets.contiguous().view(-1)
+            att_loss = attention_mask.contiguous().view(-1)  # flatten for loss
+
+            # we flatten the loss and apply attention mask because we do not need
+            # to train model on [PAD] tokens
+            loss = F.cross_entropy(lm_logits, targets, reduce=False)
+            loss = loss * att_loss
+            loss = torch.mean(loss)
+        return lm_logits, loss
+
+
+    
+
 
 
 # ---- trainer ---- #
@@ -377,6 +531,8 @@ class Trainer:
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
         self.config = config
+
+        self.model.apply(model._init_weights) # apply the specific weights
 
         self.device = "cpu"
         if torch.cuda.is_available():
@@ -421,12 +577,17 @@ class Trainer:
                 else:
                     pbar.set_description(f"[VAL]")
                 with torch.set_grad_enabled(is_train):
-                    logits, loss = model(
+                    out = model(
                         **enc,
                         **{k: v[:, :-1] for k, v in dec.items()},
                         targets=dec["input_ids"][:, 1:],
                         verbose=verbose
                     )
+
+                    if model.output_attentions:
+                        lm_logits, loss, atts = out
+                    else:
+                        lm_logits, loss = out
 
                     if str(loss.item()) == "nan":
                         print(enc)
@@ -440,6 +601,45 @@ class Trainer:
                         # add things to tb
                         tb.add_scalar("loss", loss.item(), global_step=gs, walltime=time.time())
                         tb.add_scalar("lr", lr, global_step=gs, walltime=time.time())
+                        
+                        if model.output_attentions:
+                            # process the attns and get the following:
+                            # encoder_attns - for each layer / one head
+                            # decoder_encoder_attns - for each layer / one head
+                            # decoder_self_attns - for each layer / one head
+
+                            # shapes for reference:
+                            # {
+                            #   'encoder': [torch.Size([128, 8, 40, 40]),] * n_layers,
+                            #   'decoder_self': [torch.Size([128, 8, 20, 20]),] * n_layers,
+                            #   'decoder_mem': [torch.Size([128, 8, 20, 40]),] * n_layers
+                            # }
+                            out = {
+                                "encoder": [x[0].detach().numpy()[0,0] for x in atts[0]],
+                                "decoder_self": [x[0].detach().numpy()[0,0] for x in atts[1]],
+                                "decoder_mem": [x[1].detach().numpy()[0,0] for x in atts[1]],
+                            }
+
+                            # print({k:[x.shape for x in v] for k,v in out.items()})
+
+                            # add to tb summaries
+                            for l, enc_att in enumerate(out["encoder"]):
+                                tb.add_image(
+                                    f"encoder_attn/layer_{l}", normalise_image(enc_att),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats="HW"
+                                )
+                            for l, (ds, dm) in enumerate(zip(out["decoder_self"], out["decoder_mem"])):
+                                tb.add_image(
+                                    f"decoder_mem_attn/layer_{l}", normalise_image(dm),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats= "HW"
+                                )
+                                tb.add_image(
+                                    f"decoder_self_attn/layer_{l}", normalise_image(ds),
+                                    global_step=gs, walltime=time.time(),
+                                    dataformats="HW"
+                                )
 
                     # back prob and update the gradient
                     for p in model.parameters(): # better than model.zero_grad()
@@ -490,6 +690,10 @@ class Config:
     decoder_maxlen = 20
     use_var_masking = True
 
+    output_attentions = False
+    openai_block = True
+    use_emb_matrix_head = False
+
     def __init__(self, **kwargs):
         self.attrs = []
         for k,v in kwargs.items():
@@ -505,7 +709,10 @@ class Config:
                 "pdrop",
                 "vocab_size",
                 "encoder_maxlen",
-                "decoder_maxlen"
+                "decoder_maxlen",
+                "output_attentions",
+                "openai_block",
+                "use_emb_matrix_head"
             ] + self.attrs)) 
         ]) + "\n"
 
@@ -546,58 +753,58 @@ class TrainerConfig:
         ]) + "\n"
 
 
-# if __name__ == "__main__":
-#     config = Config(batch_size = 4, num_samples = 14)
-#     print(config)
+if __name__ == "__main__":
+    config = Config(batch_size=4, encoder_maxlen=14, use_emb_matrix_head=True)
+    print(config)
 
-#     print("---- MODEL ----")
-#     model = TransformerEncoderDecoderModel(config)
-#     # print(model)
+    print("---- MODEL ----")
+    model = TransformerEncoderDecoderModel(config)
+    # print(model)
 
-#     def get_dummy_encoder_input():
-#         return {
-#             "x": torch.randn(config.batch_size, config.num_samples, 1),
-#             "y": torch.randn(config.batch_size, config.num_samples, 1),
-#             "z": torch.randn(config.batch_size, config.num_samples, 1),
-#             "t": torch.randn(config.batch_size, config.num_samples, 1),
-#             "o": torch.randn(config.batch_size, config.num_samples, 1),
-#             "mask_x": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-#             "mask_y": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-#             "mask_z": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-#             "mask_t": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
-#         }
+    def get_dummy_encoder_input():
+        return {
+            "x": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "y": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "z": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "t": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "o": torch.randn(config.batch_size, config.encoder_maxlen, 1),
+            "mask_x": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+            "mask_y": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+            "mask_z": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+            "mask_t": torch.from_numpy(np.random.randint(2, size = (config.batch_size))),
+        }
 
-#     def get_dummy_decoder_input():
-#         attention_mask = []
-#         for _ in range(config.batch_size):
-#             attn = [1, ]*(config.maxlen - 4)
-#             attn += [0, ]*(config.maxlen + 1 - len(attn))
-#             attention_mask.append(attn)
-#         return {
-#             "input_ids": torch.from_numpy(
-#                 np.random.randint(config.vocab_size, size=(config.batch_size, config.maxlen + 1))
-#             ),
-#             "attention_mask": torch.from_numpy(np.asarray(attention_mask).astype(np.float32))
-#         }
+    def get_dummy_decoder_input():
+        attention_mask = []
+        for _ in range(config.batch_size):
+            attn = [1, ]*(config.decoder_maxlen - 4)
+            attn += [0, ]*(config.decoder_maxlen + 1 - len(attn))
+            attention_mask.append(attn)
+        return {
+            "input_ids": torch.from_numpy(
+                np.random.randint(config.vocab_size, size=(
+                    config.batch_size, config.decoder_maxlen + 1))
+            ),
+            "attention_mask": torch.from_numpy(np.asarray(attention_mask).astype(np.float32))
+        }
     
-#     print("---- Encoder ----")
-#     encoder_inputs = get_dummy_encoder_input()
-#     for k, v in encoder_inputs.items():
-#         print(f"{k} --> {(v.shape, v.dtype)}")
+    print("---- Encoder ----")
+    encoder_inputs = get_dummy_encoder_input()
+    for k, v in encoder_inputs.items():
+        print(f"{k} --> {(v.shape, v.dtype)}")
 
-    
-#     print("---- DECODER ----")
-#     decoder_inputs = get_dummy_decoder_input()
-#     for k, v in decoder_inputs.items():
-#         print(f"{k} --> {v.shape}")
+    print("---- DECODER ----")
+    decoder_inputs = get_dummy_decoder_input()
+    for k, v in decoder_inputs.items():
+        print(f"{k} --> {v.shape}")
 
-#     # now we feed shit to the model --> w/o loss
-#     logits, loss = model(
-#         **encoder_inputs,
-#         **{k:v[:,:-1] for k,v in decoder_inputs.items()},
-#         targets = decoder_inputs["input_ids"][:, 1:],
-#         verbose = True
-#     )
+    # now we feed shit to the model --> w/o loss
+    logits, loss = model(
+        **encoder_inputs,
+        **{k:v[:,:-1] for k,v in decoder_inputs.items()},
+        targets = decoder_inputs["input_ids"][:, 1:],
+        verbose = True
+    )
 
 #     print("Predictions:", torch.argmax(logits,dim  = -1), f"Loss: {loss}")
 
