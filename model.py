@@ -89,8 +89,8 @@ class CausalSelfAttention(nn.Module):
             # pad_mask: [B, target_seqlen] --> [B, target_seqlen, target_seqlen]
             att = att + pad_mask.unsqueeze(1)
 
-        att = F.softmax(att, dim=-1)
-        att = self.attn_drop(att)
+        att_soft = F.softmax(att, dim=-1)
+        att = self.attn_drop(att_soft)
         y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(Btgt, target_seqlen, C) # re-assemble all head outputs side by side
 
@@ -99,7 +99,7 @@ class CausalSelfAttention(nn.Module):
 
         out = (y,)
         if self.output_attentions:
-            out = (y, att)
+            out = (y, att_soft)
         return out
 
 
@@ -222,6 +222,19 @@ class TransformerEncoderDecoderModel(nn.Module):
 
         if hasattr(config, "graph_encode") and config.graph_encode:
             pass
+        elif hasattr(config, "deepEnc") and config.deepEnc:
+            # same learning of input data
+            lin = nn.Sequential(
+                nn.Linear(1, config.n_embd * 4),
+                nn.GELU(),
+                nn.Linear(config.n_embd * 4, config.n_embd),
+                nn.LayerNorm(config.n_embd)
+            )
+            self.linx = lin
+            self.liny = lin
+            self.linz = lin
+            self.lint = lin
+            self.lino = lin
         else:
             # for encoder embedding
             self.linx = nn.Sequential(nn.Linear(1, config.n_embd), nn.LayerNorm(config.n_embd))
@@ -307,25 +320,20 @@ class TransformerEncoderDecoderModel(nn.Module):
         return optimizer
 
     def forward(self,
-            x, y, z, t, o, mask_x, mask_y, mask_z, mask_t,
+            x, y, z, t, o,
             input_ids, attention_mask,
             targets=None, verbose = False,
+            **kwargs
         ):
         if verbose:
             print("---- FORWARD ----")
 
         # embed the input and pass through the encoder layers
-        enc_out = self.enc_out(
-            x, y, z, t, o,
-            mask_x, mask_y, mask_z, mask_t,
-            verbose,
-        )
+        enc_out = self.enc_out(x, y, z, t, o, verbose,)
 
         # take the embeddings from encoder and input to decoder
         # and get the output logits
-        lm_logits, dec_attn = self.dec_out(
-            enc_out[0], input_ids, attention_mask, verbose
-        )
+        lm_logits, dec_attn = self.dec_out(enc_out[0], input_ids, attention_mask, verbose)
         if verbose:
             print(f"Logits: {lm_logits.size()}")
 
@@ -336,6 +344,7 @@ class TransformerEncoderDecoderModel(nn.Module):
             targets = targets.contiguous().view(-1)
             att_loss = attention_mask.contiguous().view(-1) # flatten for loss
 
+            
             # we flatten the loss and apply attention mask because we do not need
             # to train model on [PAD] tokens
             loss = F.cross_entropy(lm_logits, targets, reduce=False)
@@ -351,8 +360,9 @@ class TransformerEncoderDecoderModel(nn.Module):
 
 
     def enc_out(self,
-        x, y, z, t, o, mask_x, mask_y, mask_z, mask_t,
-        verbose = False
+        x, y, z, t, o,
+        verbose = False,
+        **kwargs
     ):
         """method for a single encoder forward pass, useful when beam decoding"""
         # encoder embedding
@@ -362,13 +372,6 @@ class TransformerEncoderDecoderModel(nn.Module):
         z = self.linz(z) + self.embd(torch.ones(embd_shape).long() * 2) # [B, N, n_embd]
         t = self.lint(t) + self.embd(torch.ones(embd_shape).long() * 3) # [B, N, n_embd]
         o = self.lino(o) + self.embd(torch.ones(embd_shape).long() * 4) # [B, N, n_embd]
-
-        # mask encoder input based on wether the variables are present or not
-        if self.use_var_masking:
-            x = x * mask_x.view(-1, 1, 1) # [B, N, n_embd]
-            y = x * mask_y.view(-1, 1, 1) # [B, N, n_embd]
-            z = x * mask_z.view(-1, 1, 1) # [B, N, n_embd]
-            t = x * mask_t.view(-1, 1, 1) # [B, N, n_embd]
         src = x + y + z + t + o # [B, N, n_embd]
         if verbose: print(f"Source: {src.size()}")
 
@@ -415,113 +418,6 @@ class TransformerEncoderDecoderModel(nn.Module):
 
         del pad_mask # conserve memory
         return lm_logits, out
-
-
-
-# take the input and pass it in the graph encoder first then use
-# the generated graph embeddings as the input to the encoder
-class GraphBlock(nn.Module):
-    # Using a simple graph Block I built for other project, from:
-    # https://github.com/yashbonde/vaayuvidha/blob/master/tests/static_temp_gnn.py
-    def __init__(self, config):
-        super().__init__()
-
-        # for node_edge <- node + edge_attr
-        self.edge_lin = nn.Sequential(
-            nn.Linear(int(config.n_embd * 2), config.n_embd),
-            nn.ReLU()
-        )
-        self.edge_drop = nn.Dropout(config.pdrop)
-
-        # for node_2 <- node + global + node_edge
-        self.node_lin = nn.Sequential(
-            nn.Linear(int(config.n_embd * 3), int(config.n_embd * 4)),
-            nn.ReLU(),
-            nn.Linear(int(config.n_embd * 4), config.n_embd)
-        )
-        self.node_drop = nn.Dropout(config.pdrop)
-
-        # for global <- node_2 + global
-        self.glob_lin = nn.Sequential(
-            nn.Linear(int(config.n_embd * 2), config.n_embd),
-            nn.ReLU()
-        )
-        self.glob_drop = nn.Dropout(config.pdrop)
-
-    def forward(self, d):
-        # when stacking inputs == outputs, so pass a tuple
-        x, edge_index, e, u, batch = d # data tuple
-
-        row, col = edge_index
-
-        out = self.edge_lin(torch.cat((x[row], e), dim = -1))
-        out, argmax = scatter_max(out, col, dim=0, dim_size=x.size(0))
-        out = self.edge_drop(out)
-        out = self.node_drop(self.node_lin(torch.cat((out, x, u[batch]), dim = -1)))
-        x = x + out # residual
-
-        x_u, argmax = scatter_max(x, batch, dim=0)
-        out = self.glob_lin(torch.cat((x_u, u), dim = 1))
-        u = u + out # residual
-        return (x, edge_index, e, u, batch)  # data tuple
-
-
-class TransformerGraphEncoderDecoderModel(TransformerEncoderDecoderModel):
-    def __init__(self):
-        assert (
-            hasattr(config, "graph_encode") and config.graph_encode,
-            "Do not initiliase GraphEncoder model if you are not going "
-            "to use it, can break further things"
-        )
-        # loads most of the things all we need to make is the graph network
-        super().__init__(config)
-
-        self.graph = nn.Sequential(*[GraphBlock(config),]*config.n_graph_blocks)
-
-    def _convert_to_graph_input(self):
-        pass
-
-    def forward(self,
-                x, y, z, t, o,
-                input_ids, attention_mask,
-                targets=None,
-                verbose=False,
-                **kwargs
-                ):
-        if verbose:
-            print("---- FORWARD ----")
-
-        b = 
-
-        # embed the input and pass through the encoder layers
-        enc_out = self.encoder(out)
-
-        # take the embeddings from encoder and input to decoder
-        # and get the output logits
-        lm_logits = self.dec_out(
-            enc_out, input_ids, attention_mask, verbose
-        )
-        if verbose:
-            print(f"Logits: {lm_logits.size()}")
-
-        # if the targets are given then
-        loss = None
-        if targets is not None:
-            lm_logits = lm_logits.view(-1, lm_logits.size(-1))
-            targets = targets.contiguous().view(-1)
-            att_loss = attention_mask.contiguous().view(-1)  # flatten for loss
-
-            # we flatten the loss and apply attention mask because we do not need
-            # to train model on [PAD] tokens
-            loss = F.cross_entropy(lm_logits, targets, reduce=False)
-            loss = loss * att_loss
-            loss = torch.mean(loss)
-        return lm_logits, loss
-
-
-    
-
-
 
 # ---- trainer ---- #
 class Trainer:
@@ -650,7 +546,7 @@ class Trainer:
                     gs += 1
 
                     # use the noam scheme from original transformers papers
-                    lr = min(gs**(-0.5), gs/(config.warmup_steps ** 1.5)) * (model.n_embd ** -0.5) * 0.1
+                    lr = min(gs**(-0.5), gs/(config.warmup_steps ** 1.5)) * (model.n_embd ** -0.5) * 0.05
                     for param_group in optimizer.param_groups:
                         param_group["lr"] = lr
             
@@ -688,8 +584,8 @@ class Config:
     vocab_size = len(VOCAB)
     encoder_maxlen = 40
     decoder_maxlen = 20
+    
     use_var_masking = True
-
     output_attentions = False
     openai_block = True
     use_emb_matrix_head = False

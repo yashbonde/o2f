@@ -44,21 +44,35 @@ To generate observations from the expressions, random values between `inp_range`
 
 Small networks with 13000 samples dataset, `test_train_split = -0.9`, `use_vars_masking` tells to mask vairables at the beginning
 
-| model_name | dataset | n_samples | epochs | batch_size | warmup_steps | lr_mult | encoder_maxlen | decoder_maxlen | use_var_masking | n_embd | n_layer | n_head | openai_block | use_emb_weights |
-|------------|---------|-----------|--------|------------|--------------|---------|----------------|----------------|-----------------|--------|---------|--------|--------|--------|
-| plato       | small   | 12999     | 20     | 128        | 300          | 1       | 40             | 20             | True           | 128    | 6       | 8      | False | False |
-| plato2      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | True           | 128    | 6       | 8      | False | False |
-| plato3      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | True           | 128    | 6       | 8      | False | False |
-| ✅ plato4   | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 8      | False | False |
-| plato5      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | False | False |
-| plato6      | small   | 12999     | 20     | 512        | 23 (1 batch) | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | False | False |
-| plato7      | small   | 12999     | 20     | 512        | 46 (2 batch) | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | False | False |
-| plato8      | small   | 12999     | 20     | 64         | 100          | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | False | False |
-| plato9      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 4      | False | False |
-| plato_med_1 | medium  | 14209     | 20     | 128        | 60           | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | False | False |
-| plato46k    |medium46k| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | False | False |
-| plato46k2   |medium46k2| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False           | 128    | 6       | 8      | True  | False |
-| plato46k3   |medium46k2| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False           | 128    | 6       | 8      | True  | True  |
+| model_name | dataset | n_samples | epochs | batch_size | warmup_steps | lr_mult | encoder_maxlen | decoder_maxlen | use_var_masking | n_embd | n_layer | n_head | openai_block | use_emb_weights | deepEnc |
+|------------|---------|-----------|--------|------------|--------------|---------|----------------|----------------|-----------------|--------|---------|--------|--------|--------|--------|
+| plato       | small   | 12999     | 20     | 128        | 300          | 1       | 40             | 20             | True           | 128    | 6       | 8      | N/A | N/A | N/A |
+| plato2      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | True           | 128    | 6       | 8      | N/A | N/A | N/A |
+| plato3      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | True           | 128    | 6       | 8      | N/A | N/A | N/A |
+| ✅ plato4   | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 8      | N/A | N/A | N/A |
+| plato5      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | N/A | N/A | N/A |
+| plato6      | small   | 12999     | 20     | 512        | 23 (1 batch) | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | N/A | N/A | N/A |
+| plato7      | small   | 12999     | 20     | 512        | 46 (2 batch) | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | N/A | N/A | N/A |
+| plato8      | small   | 12999     | 20     | 64         | 100          | 0.1     | 40             | 20             | False            | 128    | 6       | 2      | N/A | N/A | N/A |
+| plato9      | small   | 12999     | 20     | 128        | 50           | 0.1     | 40             | 20             | False            | 128    | 6       | 4      | N/A | N/A | N/A |
+| plato_med_1 | medium  | 14209     | 20     | 128        | 60           | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | N/A | N/A | N/A |
+| plato46k    |medium46k| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False            | 128    | 6       | 8      | N/A | N/A | N/A |
+| plato46k2   |medium46k| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False           | 128    | 6       | 8      | True  | N/A | N/A |
+| plato46k3   |medium46k| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False           | 128    | 6       | 8      | True  | True  | N/A |
+| plato46km4   |medium46k| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False           | 128    | 6       | 8      | True  | True  | `ln(lin())` |
+| pm4_1   |medium46k| 46101     | 20     | 128        | 300          | 0.1     | 100            | 40             | False           | 128    | 6       | 8      | True  | True  | `full` |
+| pm4_2   |medium46k| 46101     | 20     | 128        | 300          | 0.05    | 100            | 40             | False           | 128    | 6       | 8      | True  | True  | `full` |
+
+**Nomenclature:** I did not expect experiments to be logged so well, so I do not have a nomenclature. But this is how I have done:
+```
+plato<n>: trained on small dataset
+plato_med_1: sequence length increased
+medium46k: with 46101 total samples
+
+[Now]
+pm<V>_<v>: plato medium/mark with mahor and minor version
+p<n>: plato small
+```
 
 Couple of observations from `plato_small` test:
 

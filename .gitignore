@@ -6,3 +6,6 @@ data/
 
 # all the model files
 *.pt
+
+# TB files, maintaining is getting diffucult
+*events.out.tfevents*
