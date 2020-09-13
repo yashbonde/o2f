@@ -56,6 +56,10 @@ class CausalSelfAttention(nn.Module):
 
         self.n_head = config.n_head
 
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
     def forward(self, tgt, memory = None, forward_mask = False, pad_mask = None):
         # this is going to be the case with encoders and decoder bottom layer
         if memory == None:
@@ -85,7 +89,11 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         y = self.resid_drop(self.proj(y))
-        return y
+
+        out = (y,)
+        if self.output_attentions:
+            out = (y, att)
+        return out
 
 
 class EncoderBlock(nn.Module):
@@ -104,17 +112,29 @@ class EncoderBlock(nn.Module):
         )
         self.openai_block = config.openai_block
 
-    def forward(self, x):
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
+    def forward(self, d):
         # in OpenAI implementation they perform normalisation before attention and MLP
+        x = d[0]
+
         if self.openai_block: x = self.ln1(x)
-        x = x + self.attn(x)
+        self_att = self.attn(x)
+        x = x + self_att[0]
         if not self.openai_block: x = self.ln1(x)
         
         # MLP
         if self.openai_block: x = self.ln2(x)
         x = x + self.mlp(x)
         if not self.openai_block: x = self.ln2(x)
-        return x
+
+        o = (x,)
+        if self.output_attentions:
+            oattn = ((self_att[1],),) + d[1]
+            o = (x, oattn)
+        return o
 
 
 class DecoderBlock(nn.Module):
@@ -136,26 +156,37 @@ class DecoderBlock(nn.Module):
 
         self.openai_block = config.openai_block
 
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
+
+
     def forward(self, d):
         # in OpenAI implementation they perform normalisation before attention and MLP
-        x, mem, pad_mask = d
+        x, mem, pad_mask = d[:3]
 
         # self-attention
         if self.openai_block: x = self.ln1(x)
-        x = x + self.attn(x, forward_mask=True, pad_mask=pad_mask)
+        self_att = self.attn(x, forward_mask=True, pad_mask=pad_mask)
+        x = x + self_att[0]
         if not self.openai_block: x = self.ln1(x)
 
         # memory-attention
         if self.openai_block: x = self.ln2(x)
-        x = x + self.attn(x, mem)
+        mem_att = self.attn(x, mem)
+        x = x + mem_att[0]
         if not self.openai_block: x = self.ln2(x)
 
-        
         # MLP
         if self.openai_block: x = self.ln3(x)
         x = x + self.mlp(x)
         if not self.openai_block: x = self.ln3(x)
-        return (x, mem, pad_mask)
+
+        o = (x, mem, pad_mask,)
+        if self.output_attentions:
+            oattn = ((self_att[1], mem_att[1],), *d[3])
+            o = (x, mem, pad_mask, oattn)
+        return o
 
 
 class TransformerEncoderDecoderModel(nn.Module):
@@ -206,6 +237,10 @@ class TransformerEncoderDecoderModel(nn.Module):
 
         self.openai_block = config.openai_block
         self.use_emb_matrix_head = config.use_emb_matrix_head
+
+        self.output_attentions = False
+        if hasattr(config, "output_attentions"):
+            self.output_attentions = config.output_attentions
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -264,7 +299,7 @@ class TransformerEncoderDecoderModel(nn.Module):
     def forward(self,
             x, y, z, t, o, mask_x, mask_y, mask_z, mask_t,
             input_ids, attention_mask,
-            targets=None, verbose = False
+            targets=None, verbose = False,
         ):
         if verbose:
             print("---- FORWARD ----")
@@ -273,13 +308,13 @@ class TransformerEncoderDecoderModel(nn.Module):
         enc_out = self.enc_out(
             x, y, z, t, o,
             mask_x, mask_y, mask_z, mask_t,
-            verbose
+            verbose,
         )
 
         # take the embeddings from encoder and input to decoder
         # and get the output logits
-        lm_logits = self.dec_out(
-            enc_out, input_ids, attention_mask, verbose
+        lm_logits, dec_attn = self.dec_out(
+            enc_out[0], input_ids, attention_mask, verbose
         )
         if verbose:
             print(f"Logits: {lm_logits.size()}")
@@ -296,7 +331,13 @@ class TransformerEncoderDecoderModel(nn.Module):
             loss = F.cross_entropy(lm_logits, targets, reduce=False)
             loss = loss * att_loss
             loss = torch.mean(loss)
-        return lm_logits, loss
+
+        o = (lm_logits, loss)
+        if self.output_attentions:
+            enc_attn = enc_out[-1]
+            dec_attn = dec_attn[-1]
+            o = (lm_logits, loss, (enc_attn, dec_attn))
+        return o
 
 
     def enc_out(self,
@@ -321,6 +362,8 @@ class TransformerEncoderDecoderModel(nn.Module):
         src = x + y + z + t + o # [B, N, n_embd]
         if verbose: print(f"Source: {src.size()}")
 
+        if self.output_attentions:
+            src = (src, ())
         enc_out = self.encoder(src)
         return enc_out
 
@@ -349,15 +392,18 @@ class TransformerEncoderDecoderModel(nn.Module):
             print(f"attention_mask: {attention_mask.size()}")
 
         # decoder output and langauge model head
-        dec_out = self.decoder((tgt, enc_out, pad_mask))[0]  # returns a tuple
-        dec_out = self.ln_f(dec_out)
+        dec_in = (tgt, enc_out, pad_mask)
+        if self.output_attentions:
+            dec_in = (tgt, enc_out, pad_mask, ())
+        out = self.decoder(dec_in)
+        dec_out = self.ln_f(out[0])
         if self.use_emb_matrix_head:
             lm_logits = F.linear(dec_out, self.wte.weight)
         else:
             lm_logits = self.lm_head(dec_out)
 
         del pad_mask # conserve memory
-        return lm_logits
+        return lm_logits, out
 
 
 # ---- trainer ---- #
